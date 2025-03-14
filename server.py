@@ -199,7 +199,7 @@ def client_thread(client_sock, addr):
 
 def main():
     if len(sys.argv) < 2:
-        print(f"Usage: python {sys.argv[0]} <port>")
+        print(f"Usage: python {sys.argv[0]} <5000>")
         sys.exit(1)
     
     port = int(sys.argv[1])

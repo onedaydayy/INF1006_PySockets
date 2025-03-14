@@ -23,7 +23,7 @@ def receive_messages(sock):
 
 def main():
     if len(sys.argv) < 3:
-        print("Usage: python client.py <server_host> <port>")
+        print("Usage: python client.py <server_host> <5000>")
         sys.exit(1)
 
     server_host = sys.argv[1]
