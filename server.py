@@ -1,303 +1,224 @@
 import socket
 import threading
-import openai
-import os
+import sys
 
-# ===========================
-# Configuration
-# ===========================
-HOST = '0.0.0.0'      # Listen on all interfaces
-PORT = 12345          # Arbitrary port for the server
-openai.api_key = os.environ.get("OPENAI_API_KEY")  # Must be set in your environment
+HOST = '0.0.0.0'  # Listen on all available interfaces
 
-# ===========================
-# Global Data Structures
-# ===========================
-clients_lock = threading.Lock()
-clients = {}  # username -> (socket, address)
+# Global data structures
+clients = {}        # Maps username -> client socket
+groups = {}         # Maps groupName -> set of usernames
 
-groups_lock = threading.Lock()
-groups = {}   # group_name -> set of usernames
-
-# ===========================
-# Helper Functions
-# ===========================
-def send_message(sock, msg):
+def broadcast(message, sender=None):
     """
-    Sends a string message to a specific client's socket.
+    Send a message to every connected client (except the sender, if provided).
     """
+    for user, sock in clients.items():
+        if user != sender:  # skip sending back to the sender if you prefer
+            try:
+                sock.sendall(message.encode('utf-8'))
+            except:
+                print(f"Failed to send message to {user}")
+
+def send_private(sender, recipient, msg):
+    """
+    Send a private message from 'sender' to 'recipient' (username).
+    """
+    if recipient not in clients:
+        # recipient does not exist
+        if sender in clients:
+            clients[sender].sendall(f"User '{recipient}' not found.\n".encode('utf-8'))
+        return
     try:
-        sock.sendall(msg.encode('utf-8'))
-    except BrokenPipeError:
-        # Client may have disconnected
-        pass
+        clients[recipient].sendall(f"[PM from {sender}] {msg}\n".encode('utf-8'))
     except:
-        pass
+        print(f"Failed to send private message to {recipient}")
 
-def broadcast_message(msg, exclude_user=None):
+def handle_group_command(sender, tokens):
     """
-    Sends a message to all connected clients except possibly one user (exclude_user).
+    Handle commands starting with '@group' followed by 'set', 'send', 'leave', 'delete', etc.
+    Syntax examples:
+      @group set myGroup user1, user2
+      @group send myGroup Hello group
+      @group leave myGroup
+      @group delete myGroup
     """
-    with clients_lock:
-        for user, (sock, _) in clients.items():
-            if user != exclude_user:  # skip sender if desired
-                send_message(sock, msg)
+    if len(tokens) < 3:
+        clients[sender].sendall(b"Invalid @group command format.\n")
+        return
 
-def rephrase_text_via_openai(text):
-    """
-    Calls the OpenAI API to rephrase the provided text.
-    Returns the rephrased version as a string, or an error message on failure.
-    """
-    if not openai.api_key:
-        return "OpenAI API key not configured on server. Cannot rephrase."
+    subcommand = tokens[1].lower()
+    group_name = tokens[2]
 
-    try:
-        response = openai.Completion.create(
-            model="text-davinci-003",
-            prompt=f"Rephrase the following sentence with similar meaning:\n\n{text}\n\nRephrased:",
-            max_tokens=100,
-            temperature=0.7
-        )
-        rephrased = response.choices[0].text.strip()
-        return rephrased
-    except Exception as e:
-        return f"Error calling OpenAI API: {e}"
+    if subcommand == 'set':
+        # @group set <groupName> user1, user2, ...
+        # If no members specified after group name, just create an empty set or
+        # add only the sender by default
+        if len(tokens) < 4:
+            clients[sender].sendall(b"No members specified for group set.\n")
+            return
+        # parse the members from tokens[3] which might be "user1," "user2," ...
+        member_string = ' '.join(tokens[3:])  # user1, user2, ...
+        member_string = member_string.replace(',', ' ')
+        members = member_string.split()
+        # optionally add the sender if you want them in the group by default
+        members.append(sender)
 
-# ===========================
-# Group Command Handlers
-# ===========================
-def handle_group_set(requester, group_name, members_str):
-    """
-    Creates a new group with specified members (including the requester).
-    Example: @group set groupName user1, user2
-    """
-    new_members = [m.strip() for m in members_str.split(',') if m.strip()]
-    new_members.append(requester)  # Ensure the creator is in the group
-
-    with groups_lock:
         if group_name in groups:
-            sock = clients[requester][0]
-            send_message(sock, f"[Server] Group '{group_name}' already exists.\n")
+            clients[sender].sendall(f"Group '{group_name}' already exists.\n".encode('utf-8'))
             return
-        groups[group_name] = set(new_members)
+        groups[group_name] = set(members)
+        clients[sender].sendall(f"Group '{group_name}' created with members {members}\n".encode('utf-8'))
 
-    # Notify members
-    for m in new_members:
-        if m in clients:
-            send_message(clients[m][0],
-                         f"[Server] You have been added to group '{group_name}'.\n")
-    send_message(clients[requester][0],
-                 f"[Server] Group '{group_name}' created with members: {', '.join(new_members)}\n")
-
-def handle_group_send(requester, group_name, message):
-    """
-    Sends a message to all members of the specified group.
-    """
-    with groups_lock:
+    elif subcommand == 'send':
+        # @group send <groupName> <message>
         if group_name not in groups:
-            send_message(clients[requester][0],
-                         f"[Server] Group '{group_name}' does not exist.\n")
+            clients[sender].sendall(f"Group '{group_name}' does not exist.\n".encode('utf-8'))
             return
-        if requester not in groups[group_name]:
-            send_message(clients[requester][0],
-                         f"[Server] You are not in group '{group_name}'.\n")
+        if sender not in groups[group_name]:
+            clients[sender].sendall(f"You are not a member of '{group_name}'.\n".encode('utf-8'))
             return
+        # The message is everything after '@group send groupName'
+        # tokens: ['@group','send','myGroup','Hello','there']
+        message_body = ' '.join(tokens[3:])
+        # broadcast to group members
+        for user in groups[group_name]:
+            if user in clients and user != sender:
+                clients[user].sendall(f"[{sender} -> {group_name}] {message_body}\n".encode('utf-8'))
 
-        # Forward message to all group members
-        for member in groups[group_name]:
-            if member in clients:  # If they're still online
-                send_message(clients[member][0],
-                             f"[Group:{group_name}] {requester}: {message}\n")
-
-def handle_group_leave(requester, group_name):
-    """
-    Removes the requester from the specified group.
-    """
-    with groups_lock:
+    elif subcommand == 'leave':
+        # @group leave <groupName>
         if group_name not in groups:
-            send_message(clients[requester][0],
-                         f"[Server] Group '{group_name}' does not exist.\n")
+            clients[sender].sendall(f"Group '{group_name}' does not exist.\n".encode('utf-8'))
             return
-        if requester not in groups[group_name]:
-            send_message(clients[requester][0],
-                         f"[Server] You are not in group '{group_name}'.\n")
+        if sender not in groups[group_name]:
+            clients[sender].sendall(f"You are not in group '{group_name}'.\n".encode('utf-8'))
             return
+        groups[group_name].remove(sender)
+        clients[sender].sendall(f"You have left the group '{group_name}'.\n".encode('utf-8'))
 
-        groups[group_name].remove(requester)
-        send_message(clients[requester][0],
-                     f"[Server] You have left group '{group_name}'.\n")
-
-def handle_group_delete(requester, group_name):
-    """
-    Deletes the group. (Optionally, only allow the creator or certain members.)
-    """
-    with groups_lock:
+    elif subcommand == 'delete':
+        # @group delete <groupName>
         if group_name not in groups:
-            send_message(clients[requester][0],
-                         f"[Server] Group '{group_name}' does not exist.\n")
+            clients[sender].sendall(f"Group '{group_name}' does not exist.\n".encode('utf-8'))
             return
-        if requester not in groups[group_name]:
-            send_message(clients[requester][0],
-                         f"[Server] You are not a member of '{group_name}'.\n")
-            return
-
-        members = groups[group_name]
-        for m in members:
-            if m in clients:
-                send_message(clients[m][0],
-                             f"[Server] Group '{group_name}' has been deleted.\n")
+        # You might optionally check if the sender is allowed to delete
+        # For now, let the user who created it or any user do it
         del groups[group_name]
+        clients[sender].sendall(f"Group '{group_name}' has been deleted.\n".encode('utf-8'))
 
-# ===========================
-# Main Client Handler
-# ===========================
-def handle_client_messages(client_socket, address):
+    else:
+        clients[sender].sendall(b"Unknown @group subcommand.\n")
+
+def list_users(requester):
     """
-    Main loop to handle commands/messages from a single connected client.
+    Sends the list of all connected usernames to the 'requester' client.
     """
-    username = None
+    names_str = ", ".join(clients.keys())
+    clients[requester].sendall(f"Online users: {names_str}\n".encode('utf-8'))
+
+def client_thread(client_sock, addr):
+    """
+    Thread that handles an individual client's connection.
+    """
+    # 1) Prompt for username
     try:
-        # Prompt for unique username
-        while True:
-            send_message(client_socket, "Enter your desired username: ")
-            data = client_socket.recv(1024).decode('utf-8').strip()
+        client_sock.sendall(b"Enter a unique username: ")
+        username = client_sock.recv(1024).decode('utf-8').strip()
+        if not username:
+            client_sock.sendall(b"Invalid username.\n")
+            client_sock.close()
+            return
+        
+        # 2) Check duplicates
+        if username in clients:
+            client_sock.sendall(b"Username is already taken. Disconnecting.\n")
+            client_sock.close()
+            return
+        
+        # Register the client
+        clients[username] = client_sock
+        print(f"[+] {username} connected from {addr}")
+        broadcast(f"{username} has joined the chat.\n", sender=username)
+
+        client_sock.sendall(b"Welcome to the chat!\n")
+    except:
+        client_sock.close()
+        return
+
+    # 3) Main loop for receiving commands/messages
+    while True:
+        try:
+            data = client_sock.recv(1024)
             if not data:
-                client_socket.close()
-                return
-
-            candidate = data
-            with clients_lock:
-                if candidate not in clients:
-                    username = candidate
-                    clients[username] = (client_socket, address)
-                    break
-                else:
-                    send_message(client_socket, "[Server] Username already taken.\n")
-
-        # Announce new user
-        broadcast_message(f"[Server] {username} has joined the chat.\n")
-
-        # Main loop for messages
-        while True:
-            msg = client_socket.recv(1024)
-            if not msg:
                 # Client disconnected
                 break
-
-            msg_decoded = msg.decode('utf-8').strip()
-            if not msg_decoded:
+            message = data.decode('utf-8').strip()
+            if not message:
                 continue
 
-            # Command checks
-            if msg_decoded.startswith('@quit'):
-                broadcast_message(f"[Server] {username} has disconnected.\n", exclude_user=username)
+            # Check for special commands
+            if message == '@quit':
+                # user wants to exit
+                broadcast(f"{username} has left the chat.\n", sender=username)
                 break
-
-            elif msg_decoded.startswith('@names'):
-                # List all users
-                with clients_lock:
-                    current_users = ", ".join(clients.keys())
-                send_message(client_socket, f"[Server] Connected users: {current_users}\n")
-
-            elif msg_decoded.startswith('@rephrase '):
-                original_text = msg_decoded[len('@rephrase '):].strip()
-                rephrased = rephrase_text_via_openai(original_text)
-                send_message(client_socket, f"[Rephrased] {rephrased}\n")
-
-            elif msg_decoded.startswith('@group '):
-                # Sub-commands: set, send, leave, delete
-                parts = msg_decoded.split(' ', 2)
-                if len(parts) < 3:
-                    send_message(client_socket, "[Server] Invalid @group command.\n")
+            
+            elif message == '@names':
+                list_users(username)
+            
+            elif message.startswith('@'):
+                # parse further
+                tokens = message.split()
+                if len(tokens) < 1:
                     continue
-                sub_command = parts[1].strip()
-                remainder = parts[2].strip()
-
-                if sub_command == 'set':
-                    # remainder -> "groupName user1, user2"
-                    sub_parts = remainder.split(' ', 1)
-                    if len(sub_parts) < 2:
-                        send_message(client_socket, "[Server] Usage: @group set <group> <members>\n")
-                        continue
-                    group_name = sub_parts[0]
-                    members_str = sub_parts[1]
-                    handle_group_set(username, group_name, members_str)
-
-                elif sub_command == 'send':
-                    # remainder -> "groupName message"
-                    sub_parts = remainder.split(' ', 1)
-                    if len(sub_parts) < 2:
-                        send_message(client_socket, "[Server] Usage: @group send <group> <message>\n")
-                        continue
-                    group_name = sub_parts[0]
-                    group_message = sub_parts[1]
-                    handle_group_send(username, group_name, group_message)
-
-                elif sub_command == 'leave':
-                    group_name = remainder
-                    handle_group_leave(username, group_name)
-
-                elif sub_command == 'delete':
-                    group_name = remainder
-                    handle_group_delete(username, group_name)
+                # check if it's private message: @username ...
+                # but also check if it's @group ...
+                if tokens[0].startswith('@group'):
+                    handle_group_command(username, tokens)
                 else:
-                    send_message(client_socket, "[Server] Unknown group command.\n")
-
-            elif msg_decoded.startswith('@'):
-                # Private message: @username ...
-                parts = msg_decoded.split(' ', 1)
-                if len(parts) < 2:
-                    send_message(client_socket, "[Server] Invalid command.\n")
-                    continue
-                target = parts[0][1:]  # remove '@'
-                pm_msg = parts[1]
-                with clients_lock:
-                    if target in clients:
-                        send_message(clients[target][0],
-                                     f"[Private] {username}: {pm_msg}\n")
-                    else:
-                        send_message(client_socket,
-                                     f"[Server] User '{target}' not found.\n")
-
+                    # private message
+                    # example: "@Bob Hello Bob!"
+                    # tokens[0] = "@Bob"
+                    # tokens[1..] = message
+                    recipient = tokens[0][1:]  # remove '@'
+                    pm_body = ' '.join(tokens[1:]) if len(tokens) > 1 else ''
+                    send_private(username, recipient, pm_body)
             else:
-                # Normal broadcast
-                broadcast_message(f"{username}: {msg_decoded}\n", exclude_user=None)
+                # normal broadcast
+                broadcast(f"[{username}] {message}\n", sender=username)
+        except ConnectionResetError:
+            break
+        except Exception as e:
+            print(f"Exception in client thread: {e}")
+            break
+    
+    # Cleanup: user left or error
+    client_sock.close()
+    if username in clients:
+        del clients[username]
+    print(f"[-] {username} disconnected from {addr}")
 
-    except (ConnectionError, OSError):
-        # In case of sudden disconnect or broken pipe
-        pass
-    finally:
-        # Cleanup
-        if username:
-            with clients_lock:
-                if username in clients:
-                    del clients[username]
-        broadcast_message(f"[Server] {username} has disconnected.\n", exclude_user=username)
-        client_socket.close()
-
-# ===========================
-# Server Entrypoint
-# ===========================
-def start_server():
+def main():
+    if len(sys.argv) < 2:
+        print(f"Usage: python {sys.argv[0]} <port>")
+        sys.exit(1)
+    
+    port = int(sys.argv[1])
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.bind((HOST, PORT))
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.bind((HOST, port))
     server_socket.listen(5)
-    print(f"Server started on {HOST}:{PORT}...")
+
+    print(f"Server started on port {port}. Waiting for connections...")
 
     try:
         while True:
             client_sock, addr = server_socket.accept()
-            # Launch a thread to handle this client
-            handler_thread = threading.Thread(
-                target=handle_client_messages,
-                args=(client_sock, addr),
-                daemon=True
-            )
-            handler_thread.start()
+            t = threading.Thread(target=client_thread, args=(client_sock, addr))
+            t.start()
     except KeyboardInterrupt:
-        print("\n[Server] Shutting down...")
+        print("Server shutting down...")
     finally:
         server_socket.close()
 
 if __name__ == "__main__":
-    start_server()
+    main()

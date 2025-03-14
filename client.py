@@ -1,65 +1,59 @@
 import socket
-import threading
 import sys
-
-# Adjust these as needed to match your server settings
-HOST = '127.0.0.1'
-PORT = 12345
+import threading
 
 def receive_messages(sock):
     """
-    Continuously listens for messages from the server and prints them.
+    Continuously listen for server messages and print them.
+    Runs on a separate thread.
     """
     while True:
         try:
             data = sock.recv(1024)
             if not data:
-                print("[Server] Connection closed.")
+                # Connection closed by server
+                print("Disconnected from server.")
                 break
-            print(data.decode('utf-8'), end='')  # end='' because data may already have a newline
-        except ConnectionError:
-            print("[Error] Lost connection to the server.")
+            print(data.decode('utf-8'), end='')
+        except:
+            print("\nConnection lost.")
             break
-    # Once the loop ends, close the socket and exit
     sock.close()
-    sys.exit()
+    sys.exit(0)
 
 def main():
-    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    if len(sys.argv) < 3:
+        print("Usage: python client.py <server_host> <port>")
+        sys.exit(1)
+
+    server_host = sys.argv[1]
+    port = int(sys.argv[2])
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
-        client_socket.connect((HOST, PORT))
-    except ConnectionRefusedError:
-        print("[Error] Cannot connect to server. Is it running?")
-        return
+        sock.connect((server_host, port))
+    except Exception as e:
+        print(f"Connection error: {e}")
+        sys.exit(1)
 
-    # Start a thread to listen for incoming messages
-    listener_thread = threading.Thread(target=receive_messages, args=(client_socket,), daemon=True)
-    listener_thread.start()
+    # Start a thread to continuously read messages from the server
+    threading.Thread(target=receive_messages, args=(sock,), daemon=True).start()
 
-    # Main loop: read user input and send to server
-    while True:
-        try:
-            message = input()
-            # If the user typed nothing, just continue
-            if not message.strip():
+    # Now read input from the user and send to server
+    try:
+        while True:
+            user_input = input('')
+            if not user_input:
                 continue
-
-            client_socket.sendall(message.encode('utf-8'))
-
-            # If user typed "@quit", we close and exit
-            if message.startswith('@quit'):
-                print("[Info] Disconnecting from the server...")
+            sock.sendall(user_input.encode('utf-8'))
+            # If user typed '@quit', we can optionally break here
+            if user_input.strip() == '@quit':
+                print("You have quit the chat.")
                 break
-        except (EOFError, KeyboardInterrupt):
-            print("[Info] Disconnecting from the server...")
-            client_socket.sendall("@quit".encode('utf-8'))
-            break
-        except BrokenPipeError:
-            print("[Error] Lost connection to the server.")
-            break
+    except KeyboardInterrupt:
+        print("Closing client...")
 
-    client_socket.close()
-    sys.exit()
+    sock.close()
 
 if __name__ == "__main__":
     main()
