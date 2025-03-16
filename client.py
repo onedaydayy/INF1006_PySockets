@@ -51,10 +51,8 @@ def receive_messages(sock):
             if not data:
                 print("Disconnected from server.")
                 break
-
             # All messages are sent as UTF-8–encoded text.
             message = data.decode('utf-8')
-            
             # If encryption is active, assume that chat messages from other users
             # are in the format: "[<prefix>] <encrypted_text>" (for broadcast, PM, or group messages).
             # Control or system messages (that do not start with '[') are printed as is.
@@ -77,11 +75,9 @@ def receive_messages(sock):
                     print(message, end="")
             else:
                 print(message, end="")
-
         except Exception as e:
             print(f"\nConnection lost or error: {e}")
             break
-
     sock.close()
     sys.exit(0)
 
@@ -91,20 +87,15 @@ def main():
     if len(sys.argv) < 3:
         print("Usage: python client.py <server_host> <port>")
         sys.exit(1)
-
     server_host = sys.argv[1]
     port = int(sys.argv[2])
-
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.connect((server_host, port))
     except Exception as e:
         print(f"Connection error: {e}")
         sys.exit(1)
-
-    # Start the thread to listen for messages from the server.
     threading.Thread(target=receive_messages, args=(sock,), daemon=True).start()
-
     print("Connected to server. Type your messages or commands below.")
     try:
         while True:
@@ -189,7 +180,6 @@ def main():
                 else:
                     sock.sendall(user_input.encode('utf-8'))
                 continue
-
             # Broadcast Messages 
             # For regular messages (broadcast), if encryption is enabled then encrypt them.
             if encryption_enabled:
@@ -203,7 +193,6 @@ def main():
 
     except KeyboardInterrupt:
         print("Closing client...")
-
     sock.close()
 
 if __name__ == "__main__":

@@ -11,6 +11,19 @@ clients = {}         # Maps username -> client socket
 groups = {}          # Maps groupName -> set of usernames
 chat_history = defaultdict(list)  # Maps username -> list of messages
 
+COMMANDS_HELP = """
+Available Commands:
+@quit - Disconnect from the server.
+@names - List all online users.
+@username <message> - Send a private message.
+@everyone <message> - Send a message to all users.
+@group set <group_name> <members> - Create a group.
+@group send <group_name> <message> - Send a message to a group.
+@group leave <group_name> - Leave a group.
+@group delete <group_name> - Delete a group.
+@history - View chat history.
+@help - Show this help message.
+"""
 
 def broadcast(message, sender=None):
     """
@@ -190,32 +203,26 @@ def client_thread(client_sock, addr):
         print(f"Error during initial username setup: {e}")
         client_sock.close()
         return
-
     while True:
         try:
             data = client_sock.recv(1024)
             if not data:
                 # Socket closed => user disconnected
                 break
-
             message = data.decode('utf-8').strip()
             if not message:
                 continue
-
             tokens_original = message.split()
             tokens_lower = message.lower().split()
             if not tokens_lower:
                 continue
-
             # Check for special commands (case-insensitive)
             if tokens_lower[0] == '@quit':
                 # Graceful quit
                 broadcast(f"{username} has left the chat.\n", sender=username)
                 break
-
             elif tokens_lower[0] == '@names':
                 list_users(username)
-
             elif tokens_lower[0] == '@history':
                 # Retrieve and send chat history
                 history = chat_history[username]
@@ -224,37 +231,30 @@ def client_thread(client_sock, addr):
                         client_sock.sendall(msg.encode('utf-8'))
                 else:
                     client_sock.sendall(b"No chat history found.\n")
-
+            elif tokens_lower[0] == '@help':
+                # Send the help message to the client
+                client_sock.sendall(COMMANDS_HELP.encode('utf-8'))
             elif tokens_lower[0].startswith('@group'):
                 handle_group_command(username, tokens_original)
-
             elif tokens_lower[0].startswith('@'):
-                # Possibly a private message: e.g. "@Bob Hello"
+                # Handle private message or unknown command
                 recipient = tokens_original[0][1:]
                 pm_body = ' '.join(tokens_original[1:]) if len(tokens_original) > 1 else ''
                 if recipient in clients:
                     send_private(username, recipient, pm_body)
                 else:
-                    # If the user typed @something that isn't a known user
-                    client_sock.sendall(b"Invalid command or user not found.\n")
-
+                    client_sock.sendall(b"Invalid command. Use @help\n")
             else:
-                # Normal broadcast (no leading @)
                 broadcast(f"[{username}] {message}\n", sender=username)
-
         except ConnectionResetError:
-            # Client forcibly disconnected
             break
         except Exception as e:
             print(f"Exception in client thread ({username}): {e}")
             break
-
-    # Cleanup after user leaves or error
     client_sock.close()
     if username in clients:
         del clients[username]
     print(f"[-] {username} disconnected from {addr}")
-
 
 def main():
     if len(sys.argv) < 2:
@@ -270,9 +270,12 @@ def main():
 
     try:
         while True:
-            client_sock, addr = server_socket.accept()
-            t = threading.Thread(target=client_thread, args=(client_sock, addr), daemon=True)
-            t.start()
+            try:
+                client_sock, addr = server_socket.accept()
+                t = threading.Thread(target=client_thread, args=(client_sock, addr), daemon=True)
+                t.start()
+            except Exception as e:
+                print(f"Error accepting connection: {e}")
     except KeyboardInterrupt:
         print("\nServer is shutting down...")
         # Gracefully notify all connected clients
@@ -286,7 +289,6 @@ def main():
     finally:
         server_socket.close()
         print("Server socket closed.")
-
 
 if __name__ == "__main__":
     main()
