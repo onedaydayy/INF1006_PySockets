@@ -1,6 +1,7 @@
 import socket
 import threading
 import sys
+from collections import defaultdict
 
 HOST = '0.0.0.0'  # Listen on all available interfaces
 
@@ -8,39 +9,52 @@ HOST = '0.0.0.0'  # Listen on all available interfaces
 clients = {}        # Maps username -> client socket
 groups = {}         # Maps groupName -> set of usernames
 
+# Add a dictionary to store chat history
+chat_history = defaultdict(list)  # username -> list of messages
+
 def broadcast(message, sender=None):
     """
-    Send a message to every connected client (except the sender, if provided).
+    Send a message to every connected client (and store it in history).
     """
     for user, sock in clients.items():
-        if user != sender:  # skip sending back to the sender if you prefer
+        if user != sender:
             try:
                 sock.sendall(message.encode('utf-8'))
             except:
                 print(f"Failed to send message to {user}")
 
+    # Store in history (for all messages, not just broadcast)
+    if sender: # only save message if it has a sender
+        chat_history[sender].append(message)
+
+
 def send_private(sender, recipient, msg):
     """
-    Send a private message from 'sender' to 'recipient' (username).
+    Send a private message (and store it in history).
     """
     if recipient not in clients:
-        # recipient does not exist
         if sender in clients:
             clients[sender].sendall(f"User '{recipient}' not found.\n".encode('utf-8'))
         return
     try:
-        clients[recipient].sendall(f"[PM from {sender}] {msg}\n".encode('utf-8'))
+        full_message = f"[PM from {sender}] {msg}\n"
+        clients[recipient].sendall(full_message.encode('utf-8'))
+        #store history for both sender and recipient
+        chat_history[sender].append(full_message)
+        chat_history[recipient].append(full_message)
+
     except:
         print(f"Failed to send private message to {recipient}")
+
 
 def handle_group_command(sender, tokens):
     """
     Handle commands starting with '@group' followed by 'set', 'send', 'leave', 'delete', etc.
     Syntax examples:
-      @group set myGroup user1, user2
-      @group send myGroup Hello group
-      @group leave myGroup
-      @group delete myGroup
+        @group set myGroup user1, user2
+        @group send myGroup Hello group
+        @group leave myGroup
+        @group delete myGroup
     """
     if len(tokens) < 3:
         clients[sender].sendall(b"Invalid @group command format.\n")
@@ -75,15 +89,18 @@ def handle_group_command(sender, tokens):
             clients[sender].sendall(f"Group '{group_name}' does not exist.\n".encode('utf-8'))
             return
         if sender not in groups[group_name]:
-            clients[sender].sendall(f"You are not a member of '{group_name}'.\n".encode('utf-8'))
+            clients[sender].sendall(f"You are not a member of '{group_name}'.n".encode('utf-8'))
             return
         # The message is everything after '@group send groupName'
         # tokens: ['@group','send','myGroup','Hello','there']
         message_body = ' '.join(tokens[3:])
+        full_message = f"[{sender} -> {group_name}] {message_body}\n"
         # broadcast to group members
         for user in groups[group_name]:
             if user in clients and user != sender:
-                clients[user].sendall(f"[{sender} -> {group_name}] {message_body}\n".encode('utf-8'))
+                clients[user].sendall(full_message.encode('utf-8'))
+            if user in clients: # save for all users, even sender.
+                chat_history[user].append(full_message) # save group messages.
 
     elif subcommand == 'leave':
         # @group leave <groupName>
@@ -115,6 +132,8 @@ def list_users(requester):
     """
     names_str = ", ".join(clients.keys())
     clients[requester].sendall(f"Online users: {names_str}\n".encode('utf-8'))
+
+    pass
 
 def client_thread(client_sock, addr):
     """
@@ -152,20 +171,30 @@ def client_thread(client_sock, addr):
             if not data:
                 # Client disconnected
                 break
-            message = data.decode('utf-8').strip()
+            message = data.decode('utf-8').strip() # decode first
             if not message:
                 continue
-
             # Check for special commands
             if message == '@quit':
-                # user wants to exit
                 broadcast(f"{username} has left the chat.\n", sender=username)
                 break
-            
             elif message == '@names':
                 list_users(username)
-            
+
+            elif message == '@history':
+                # Retrieve and send chat history
+                history = chat_history[username]
+                if history:
+                    # could limit the number of history messages
+                    # client_sock.sendall("--- Chat History ---\n".encode('utf-8'))
+                    for msg in history:
+                        client_sock.sendall(msg.encode('utf-8'))
+                    # client_sock.sendall("--- End of History ---\n".encode('utf-8'))
+                else:
+                    client_sock.sendall(b"No chat history found.\n")
+
             elif message.startswith('@'):
+                # ... (rest of your command handling, private messages, etc.)
                 # parse further
                 tokens = message.split()
                 if len(tokens) < 1:
@@ -184,7 +213,7 @@ def client_thread(client_sock, addr):
                     send_private(username, recipient, pm_body)
             else:
                 # normal broadcast
-                broadcast(f"[{username}] {message}\n", sender=username)
+                broadcast(f"[{username}] {message}\n", sender=username) # save the message
         except ConnectionResetError:
             break
         except Exception as e:
