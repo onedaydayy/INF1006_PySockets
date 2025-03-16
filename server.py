@@ -1,3 +1,4 @@
+# server.py (Encryption Handling Added)
 import socket
 import threading
 import sys
@@ -7,13 +8,24 @@ HOST = '0.0.0.0'
 
 clients = {}
 groups = {}
-# Dictionary to store chat history: username -> list of messages
 chat_history = defaultdict(list)
 
+COMMANDS_HELP = """Available Commands:
+@quit - Disconnect from the server.
+@names - List all online users.
+@username <message> - Send a private message.
+@everyone <message> - Send a message to all users (same as not using any @ command).
+@group set <group_name> <members> - Create a group.  Example: @group set mygroup user1,user2,user3
+@group send <group_name> <message> - Send a message to a group.
+@group leave <group_name> - Leave a group.
+@group delete <group_name> - Delete a group.
+@history - View chat history.
+@help - Show this help message.
+@encrypt on - Turn on Encryption.
+@encrypt off - Turn off Encryption
+"""
+
 def broadcast(message, sender=None):
-    """
-    Send a message to every connected client (except the sender, if provided).
-    """
     for user, sock in clients.items():
         if user != sender:
             try:
@@ -21,12 +33,9 @@ def broadcast(message, sender=None):
             except:
                 print(f"Failed to send message to {user}")
     if sender:
-        chat_history[sender].append(message) # store in the history.
+        chat_history[sender].append(message)
 
 def send_private(sender, recipient, msg):
-    """
-    Send a private message.
-    """
     if recipient not in clients:
         if sender in clients:
              clients[sender].sendall(f"User '{recipient}' not found.\n".encode('utf-8'))
@@ -35,7 +44,6 @@ def send_private(sender, recipient, msg):
     try:
         full_message = f"[PM from {sender}] {msg}\n"
         clients[recipient].sendall(full_message.encode('utf-8'))
-        # store the message in history for both sender and receiver.
         chat_history[sender].append(full_message)
         chat_history[recipient].append(full_message)
 
@@ -43,7 +51,6 @@ def send_private(sender, recipient, msg):
         print(f"Failed to send private message to {recipient}")
 
 def handle_group_command(sender, tokens):
-    """Handles @group commands."""
     if len(tokens) < 3:
         clients[sender].sendall(b"Invalid @group command format.\n")
         return
@@ -58,7 +65,7 @@ def handle_group_command(sender, tokens):
         member_string = ' '.join(tokens[3:])
         member_string = member_string.replace(',', ' ')
         members = member_string.split()
-        members.append(sender)  # Add the creator to the group
+        members.append(sender)
 
         if group_name in groups:
             clients[sender].sendall(f"Group '{group_name}' already exists.\n".encode('utf-8'))
@@ -76,10 +83,10 @@ def handle_group_command(sender, tokens):
         message_body = ' '.join(tokens[3:])
         full_message = f"[{sender} -> {group_name}] {message_body}\n"
         for user in groups[group_name]:
-            if user in clients and user != sender:  # Don't send back to sender
+            if user in clients and user != sender:
                 clients[user].sendall(full_message.encode('utf-8'))
             if user in clients:
-                chat_history[user].append(full_message) # store history.
+                chat_history[user].append(full_message)
 
     elif subcommand == 'leave':
         if group_name not in groups:
@@ -105,14 +112,11 @@ def handle_group_command(sender, tokens):
         clients[sender].sendall(b"Unknown @group subcommand.\n")
 
 def list_users(requester):
-    """Sends the list of connected usernames."""
     names_str = ", ".join(clients.keys())
     clients[requester].sendall(f"Online users: {names_str}\n".encode('utf-8'))
 
 def client_thread(client_sock, addr):
-    """Handles a client connection."""
     try:
-        # --- Wait for the "ready" message ---
         ready_msg = client_sock.recv(1024).decode('utf-8').strip()
         if ready_msg != "CLIENT_READY":
             print("Unexpected initial message from client. Closing connection.")
@@ -136,7 +140,7 @@ def client_thread(client_sock, addr):
         broadcast(f"{username} has joined the chat.\n", sender=username)
 
         client_sock.sendall(b"Welcome to the chat!\n")
-    except Exception as e: # catch the Exception
+    except Exception as e:
         print(f"Error in initial handshake: {e}")
         client_sock.close()
         return
@@ -150,36 +154,61 @@ def client_thread(client_sock, addr):
             if not message:
                 continue
 
-            if message == '@quit':
+            if message.lower() == '@quit':
                 broadcast(f"{username} has left the chat.\n", sender=username)
                 break
-            elif message == '@names':
+            elif message.lower() == '@names':
                 list_users(username)
-            elif message == '@history': # command
-                # Retrieve and send chat history to client
+            elif message.lower() == '@history':
                 history = chat_history[username]
                 if history:
-                  for msg in history:
-                    client_sock.sendall(msg.encode('utf-8'))
+                    formatted_history = "\n".join(history) + "\n"
+                    client_sock.sendall(formatted_history.encode('utf-8'))
                 else:
-                  client_sock.sendall(b"No chat history found.\n")
-
-
+                    client_sock.sendall(b"No chat history found.\n")
+            elif message.lower() == '@help':
+                client_sock.sendall(COMMANDS_HELP.encode('utf-8'))
+            # --- Salt Handling (Broadcast) ---
             elif message.startswith('@salt'):
-                broadcast(f"@{username} salt {message.split(' ', 1)[1]}\n") # Broadcast with username
-
+                # Broadcast the salt *with the username*
+                broadcast(f"@{username} salt {message.split(' ', 1)[1]}\n")  # Include username
             elif message.startswith('@'):
                 tokens = message.split()
                 if len(tokens) < 1:
                     continue
-                if tokens[0].startswith('@group'):
-                    handle_group_command(username, tokens)
-                else:
+                if tokens[0].lower().startswith('@group'):
+                     handle_group_command(username, tokens)
+                elif tokens[0].lower() == '@everyone':
+                    everyone_message = ' '.join(tokens[1:])
+                    broadcast(f"[{username} (to everyone)] {everyone_message}\n", sender=username)
+                # --- Private Message (Forward Encrypted Data) ---
+                elif tokens[0].startswith('@'):
                     recipient = tokens[0][1:]
-                    pm_body = ' '.join(tokens[1:]) if len(tokens) > 1 else ''
-                    send_private(username, recipient, pm_body)
+                    # Check if the recipient exists
+                    if recipient not in clients:
+                        if username in clients:
+                            clients[username].sendall(f"User '{recipient}' not found.\n".encode('utf-8'))
+                        continue
+
+                    # reconstruct the pm.
+                    pm_body = data.decode('utf-8', errors='ignore').split(' ', 1)[1]
+                    full_message = f"[PM from {username}] {pm_body}\n" # add username
+
+                    try:
+                        clients[recipient].sendall(full_message.encode('utf-8', errors='ignore')) # send
+                        # store history for sender and receiver
+                        chat_history[username].append(full_message)
+                        chat_history[recipient].append(full_message)
+                    except Exception as e:
+                        print("Failed in sending Encrypted message", e)
+
+                else:
+                    clients[username].sendall(b"Unknown command.\n")
+
+            # --- Broadcast (Forward Encrypted Data) ---
             else:
-                broadcast(f"[{username}] {message}\n", sender=username)
+                 broadcast(f"[{username}] {message}\n", sender=username) # username
+
         except ConnectionResetError:
             break
         except Exception as e:
