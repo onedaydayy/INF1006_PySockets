@@ -1,303 +1,363 @@
+# server.py (FIXED)
 import socket
 import sys
 import threading
 import re
 from collections import defaultdict
+from cryptography.fernet import Fernet
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+from cryptography.hazmat.backends import default_backend
+import base64
+import os
 
-HOST = '0.0.0.0'  # Listen on all available interfaces
+HOST = '0.0.0.0'
 
-# Global data structures
-clients = {}         # Maps username -> client socket
-groups = {}          # Maps groupName -> set of usernames
-chat_history = defaultdict(list)  # Maps username -> list of messages
+clients = {}  # username -> socket
+groups = {}  # groupName -> set of usernames
+chat_history = defaultdict(list)  # username -> list of messages
+encryption_keys = {}  # username -> key (TEMPORARY storage)
 
-COMMANDS_HELP = """
-Available Commands:
-@quit - Disconnect from the server.
-@names - List all online users.
-@username <message> - Send a private message.
-@everyone <message> - Send a message to all users.
-@group set <group_name> <members> - Create a group.
-@group send <group_name> <message> - Send a message to a group.
-@group leave <group_name> - Leave a group.
-@group delete <group_name> - Delete a group.
-@history - View chat history.
-@help - Show this help message.
-"""
 
-def broadcast(message, sender=None):
-    """
-    Send a message to every connected client (except the sender).
-    Also stores the message in sender's chat history.
-    """
+def generate_key(password: str, salt: bytes) -> bytes:
+    """Derives a secure key from a password using PBKDF2."""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=salt,
+        iterations=390000,
+        backend=default_backend()
+    )
+    return base64.urlsafe_b64encode(kdf.derive(password.encode()))
+
+def encrypt_message(message: str, key: bytes) -> bytes:
+    """Encrypts a message using Fernet (AES)."""
+    f = Fernet(key)
+    return f.encrypt(message.encode('utf-8'))
+
+def decrypt_message(encrypted_message: bytes, key: bytes) -> str:
+    """Decrypts a message using Fernet."""
+    f = Fernet(key)
+    return f.decrypt(encrypted_message).decode('utf-8')
+
+def broadcast(message, sender=None, encrypt=False):
+    """Sends a message to all connected clients, except the sender."""
     for user, sock in list(clients.items()):
         if user != sender:
             try:
-                sock.sendall(message.encode('utf-8'))
-            except:
-                print(f"Failed to send message to {user}")
+                if encrypt and sender in encryption_keys and user in encryption_keys:
+                    # Only encrypt if BOTH users have matching keys.
+                    if encryption_keys[sender] == encryption_keys[user]: # direct compare
+                        encrypted_msg = encrypt_message(message, encryption_keys[sender])
+                        # Wrap the ENTIRE message (including sender)
+                        sock.sendall(f"[{sender}] ".encode('utf-8') + encrypted_msg + b"\n") # send as bytes
+                    else:
+                        continue  # Key mismatch - don't send
+                else:
+                    sock.sendall(message.encode('utf-8') + b'\n')  # always add newline
 
-    # Store in history (only if we actually have a sender)
+            except Exception as e:
+                print(f"Failed to send to {user}: {e}")
     if sender:
-        chat_history[sender].append(message)
+        chat_history[sender].append(message)  # Store message in history
 
 
 def send_private(sender, recipient, msg):
-    """
-    Send a private message (and store it in both sender's and recipient's chat history).
-    """
+    """Sends a private message to a specific user."""
     if recipient not in clients:
-        # If user doesn't exist, let the sender know
-        if sender in clients:
-            clients[sender].sendall(f"User '{recipient}' not found.\n".encode('utf-8'))
+        clients[sender].sendall(f"User '{recipient}' not found.\n".encode('utf-8'))
         return
 
     try:
-        full_message = f"[PM from {sender}] {msg}\n"
-        clients[recipient].sendall(full_message.encode('utf-8'))
-        # Store in both users' histories
-        chat_history[sender].append(full_message)
-        chat_history[recipient].append(full_message)
-    except:
-        print(f"Failed to send private message to {recipient}")
+        if sender in encryption_keys and recipient in encryption_keys:
+            # Check for key match before encrypting.
+            if encryption_keys[sender] == encryption_keys[recipient]: # direct compare
+                encrypted_msg = encrypt_message(msg, encryption_keys[sender])
+                full_message = f"[PM from {sender}] ".encode('utf-8') + encrypted_msg + b"\n" # send as bytes
+                clients[recipient].sendall(full_message)
+            else:
+                clients[sender].sendall(b"Encryption key mismatch. Cannot send PM.\n")
+                return  # Don't send if keys don't match
+        else:
+            # Send unencrypted if no keys are set up.
+            full_message = f"[PM from {sender}] {msg}\n"
+            clients[recipient].sendall(full_message.encode('utf-8'))
+
+        chat_history[sender].append(f"[PM to {recipient}] {msg}")
+        chat_history[recipient].append(f"[PM from {sender}] {msg}")
+
+    except Exception as e:
+        print(f"Failed to send PM to {recipient}: {e}")
+
 
 
 def handle_group_command(sender, tokens_original):
-    """
-    Handle commands starting with '@group' followed by
-    'set', 'send', 'leave', 'delete', etc.
-
-    Syntax examples:
-        @group set myGroup user1, user2
-        @group send myGroup Hello group
-        @group leave myGroup
-        @group delete myGroup
-    """
-    tokens_lower = [t.lower() for t in tokens_original]
+    """Handles group-related commands."""
+    tokens_lower = [t.lower() for t in tokens_original]  # Case-insensitive commands
     if len(tokens_lower) < 3:
         clients[sender].sendall(b"Invalid @group command format.\n")
         return
 
-    subcommand = tokens_lower[1]
-    group_name = tokens_original[2]
+    subcommand, group_name = tokens_lower[1], tokens_original[2]
 
     if subcommand == 'set':
-        # @group set <groupName> user1, user2, ...
         if len(tokens_original) < 4:
-            clients[sender].sendall(b"No members specified for group set.\n")
+            clients[sender].sendall(b"No members specified.\n")
             return
-        member_string = ' '.join(tokens_original[3:])
-        member_string = member_string.replace(',', ' ')
-        members = member_string.split()
-        # Ensure the creator is in the group
+        members = ' '.join(tokens_original[3:]).replace(',', ' ').split()  # Handle comma/space separated
         if sender not in members:
-            members.append(sender)
-
-        # Check if group already exists
+            members.append(sender)  # Always include the creator
         if group_name in groups:
             clients[sender].sendall(f"Group '{group_name}' already exists.\n".encode('utf-8'))
             return
-
         groups[group_name] = set(members)
-        clients[sender].sendall(
-            f"Group '{group_name}' created with members: {', '.join(members)}\n".encode('utf-8')
-        )
+        clients[sender].sendall(f"Group '{group_name}' created: {', '.join(members)}\n".encode('utf-8'))
+        # Notify other members
+        for user in members:
+            if user != sender and user in clients:
+                try:
+                    clients[user].sendall(f"Added to group '{group_name}' by {sender}.\n".encode('utf-8'))
+                except:
+                    print(f"Failed to notify {user}")
 
     elif subcommand == 'send':
-        # @group send <groupName> <message>
-        if group_name not in groups:
-            clients[sender].sendall(f"Group '{group_name}' does not exist.\n".encode('utf-8'))
+        if group_name not in groups or sender not in groups[group_name]:
+            clients[sender].sendall(f"Group/membership error.\n".encode('utf-8'))
             return
-        if sender not in groups[group_name]:
-            clients[sender].sendall(
-                f"You are not a member of '{group_name}'.\n".encode('utf-8')
-            )
-            return
-
         message_body = ' '.join(tokens_original[3:])
-        full_message = f"[{sender} -> {group_name}] {message_body}\n"
 
-        # Send to all group members
-        for user in groups[group_name]:
-            if user in clients:
-                try:
-                    clients[user].sendall(full_message.encode('utf-8'))
-                except:
-                    print(f"Failed to send group message to {user}")
-                # Record in each member's chat history
-                chat_history[user].append(full_message)
+        # Check if *all* members of the group share the sender's key.
+        can_encrypt = all(sender in encryption_keys and user in encryption_keys and encryption_keys[sender] == encryption_keys[user] for user in groups[group_name]) # direct compare
+        if can_encrypt:
+             full_message = f"[{sender} -> {group_name}] ".encode('utf-8') + encrypt_message(message_body, encryption_keys[sender]) + b"\n" # send as bytes
+             clients[sender].sendall(full_message) # send to group
+        else:
+            full_message = f"[{sender} -> {group_name}] {message_body}\n"
+            for user in groups[group_name]:
+                if user in clients:
+                    try:
+                        clients[user].sendall(full_message.encode('utf-8')) # send all
+                    except:
+                        print(f"Failed to send to {user}")
+                    chat_history[user].append(full_message)
 
     elif subcommand == 'leave':
-        # @group leave <groupName>
-        if group_name not in groups:
-            clients[sender].sendall(f"Group '{group_name}' does not exist.\n".encode('utf-8'))
+        if group_name not in groups or sender not in groups[group_name]:
+            clients[sender].sendall(f"Group/membership error.\n".encode('utf-8'))
             return
-        if sender not in groups[group_name]:
-            clients[sender].sendall(
-                f"You are not in group '{group_name}'.\n".encode('utf-8')
-            )
-            return
-
         groups[group_name].remove(sender)
-        clients[sender].sendall(
-            f"You have left the group '{group_name}'.\n".encode('utf-8')
-        )
-
-        # Notify other group members that the user has left.  THIS IS THE KEY ADDITION.
+        clients[sender].sendall(f"Left group '{group_name}'.\n".encode('utf-8'))
+        # Notify remaining members
         for user in groups[group_name]:
             if user in clients:
                 try:
-                    clients[user].sendall(f"{sender} has left the group '{group_name}'.\n".encode('utf-8'))
+                    clients[user].sendall(f"{sender} left group '{group_name}'.\n".encode('utf-8'))
                 except:
-                    print(f"Failed to send group leave notification to {user}")
-
+                    print(f"Failed to notify {user}")
+        # Delete group if empty
+        if not groups[group_name]:
+            del groups[group_name]
+            print(f"Group '{group_name}' deleted (empty).")
 
     elif subcommand == 'delete':
-        # @group delete <groupName>
         if group_name not in groups:
-            clients[sender].sendall(f"Group '{group_name}' does not exist.\n".encode('utf-8'))
+            clients[sender].sendall(f"Group '{group_name}' not found.\n".encode('utf-8'))
             return
-
-        # Delete the group altogether
-        del groups[group_name]
-        clients[sender].sendall(
-            f"Group '{group_name}' has been deleted.\n".encode('utf-8')
-        )
+        # Notify all members
+        for user in list(groups[group_name]):
+            if user in clients:
+                try:
+                    clients[user].sendall(f"Group '{group_name}' deleted by {sender}.\n".encode('utf-8'))
+                except:
+                    print(f"Failed to notify {user}")
+        del groups[group_name]  # Delete the group
+        clients[sender].sendall(f"Group '{group_name}' deleted.\n".encode('utf-8'))
 
     else:
         clients[sender].sendall(b"Unknown @group subcommand.\n")
 
-
 def list_users(requester):
-    """
-    Sends the list of all connected usernames to the requester.
-    """
-    names_str = ", ".join(clients.keys())
-    clients[requester].sendall(f"Online users: {names_str}\n".encode('utf-8'))
+    """Sends the list of connected users to the requester."""
+    clients[requester].sendall(f"Online users: {', '.join(clients.keys())}\n".encode('utf-8'))
 
+def handle_client_salt(username, salt_message):
+    """Handles receiving and distributing salt for encryption."""
 
-def client_thread(client_sock, addr):
-    """
-    Thread that handles an individual client's connection.
-    """
+    parts = salt_message.split()
+    if len(parts) != 2:
+        return  # Invalid format
+
     try:
-        # Prompt for username
-        client_sock.sendall(b"Enter a unique username: ")
-        username = client_sock.recv(1024).decode('utf-8').strip()
-        if not username:
-            client_sock.sendall(b"Invalid username.\n")
-            client_sock.close()
-            return
-
-        # Validate username: letters, digits, underscores only
-        pattern = re.compile("^[A-Za-z0-9_]+$")
-        if not pattern.match(username):
-            client_sock.sendall(b"Invalid username. Only letters, numbers, and underscores allowed.\n")
-            client_sock.close()
-            return
-
-        # Check for duplicates
-        if username in clients:
-            client_sock.sendall(b"Username is already taken. Disconnecting.\n")
-            client_sock.close()
-            return
-
-        # Register the new user
-        clients[username] = client_sock
-        print(f"[+] {username} connected from {addr}")
-        broadcast(f"{username} has joined the chat.\n", sender=username)
-        client_sock.sendall(b"Welcome to the chat!\n")
-
+        received_salt = base64.b64decode(parts[1])
     except Exception as e:
-        print(f"Error during initial username setup: {e}")
-        client_sock.close()
+        print(f"Error decoding salt from {username}: {e}")
         return
-    while True:
-        try:
-            data = client_sock.recv(1024)
-            if not data:
-                # Socket closed => user disconnected
-                break
-            message = data.decode('utf-8').strip()
-            if not message:
-                continue
-            tokens_original = message.split()
-            tokens_lower = message.lower().split()
-            if not tokens_lower:
-                continue
-            # Check for special commands (case-insensitive)
-            if tokens_lower[0] == '@quit':
-                # Graceful quit
-                broadcast(f"{username} has left the chat.\n", sender=username)
-                break
-            elif tokens_lower[0] == '@names':
-                list_users(username)
-            elif tokens_lower[0] == '@history':
-                # Retrieve and send chat history
-                history = chat_history[username]
-                if history:
-                    for msg in history:
-                        client_sock.sendall(msg.encode('utf-8'))
-                else:
-                    client_sock.sendall(b"No chat history found.\n")
-            elif tokens_lower[0] == '@help':
-                # Send the help message to the client
-                client_sock.sendall(COMMANDS_HELP.encode('utf-8'))
-            elif tokens_lower[0].startswith('@group'):
-                handle_group_command(username, tokens_original)
-            elif tokens_lower[0].startswith('@'):
-                # Handle private message or unknown command
-                recipient = tokens_original[0][1:]
-                pm_body = ' '.join(tokens_original[1:]) if len(tokens_original) > 1 else ''
-                if recipient in clients:
-                    send_private(username, recipient, pm_body)
-                else:
-                    client_sock.sendall(b"Invalid command. Use @help\n")
-            else:
-                broadcast(f"[{username}] {message}\n", sender=username)
-        except ConnectionResetError:
-            break
-        except Exception as e:
-            print(f"Exception in client thread ({username}): {e}")
-            break
-    client_sock.close()
+
+    # Notify all *other* connected users.
+    for other_user, other_sock in clients.items():
+        if other_user != username:
+            try:
+                other_sock.sendall(f"@{username} salt {parts[1]}\n".encode('utf-8'))
+            except Exception as e:
+                print(f"Failed to send salt to {other_user}: {e}")
+
+def handle_set_encryption(username, message):
+    """Handles the 'set encryption' command."""
+    tokens_lower = message.lower().split()
+    if len(tokens_lower) == 4 and tokens_lower[0] == 'set' and tokens_lower[1] == 'encryption':
+        user_from = tokens_lower[2]
+        key = tokens_lower[3]
+        encryption_keys[username] = key.encode('latin-1') # encode as latin-1
+        print(f"Set encryption key for user: {username} from: {user_from}")
+        clients[username].sendall(f"Encryption is enabled with a shared key from {user_from}.\n".encode('utf-8'))
+
+
+def process_message(username, message):
+    """Processes a received message based on its content."""
+    tokens_original = message.split()
+    tokens_lower = message.lower().split()
+
+    if tokens_lower[0] == '@quit':
+        broadcast(f"{username} left.\n", sender=username)
+        return False  # Signal to exit client loop
+    elif tokens_lower[0] == '@names':
+        list_users(username)
+    elif tokens_lower[0] == '@history':
+        for msg in chat_history[username]:
+            clients[username].sendall(msg.encode('utf-8'))
+    elif tokens_lower[0] == '@help':
+        clients[username].sendall(COMMANDS_HELP.encode('utf-8'))
+    elif tokens_lower[0] == '@salt':
+        handle_client_salt(username, message)
+    elif tokens_lower[0] == 'set' and tokens_lower[1] == 'encryption' and len(tokens_lower) == 4:
+        handle_set_encryption(username, message)
+    elif tokens_lower[0].startswith('@group'):
+        handle_group_command(username, tokens_original)
+    elif tokens_lower[0].startswith('@'):
+        recipient = tokens_original[0][1:]
+        pm_body = ' '.join(tokens_original[1:])
+        send_private(username, recipient, pm_body)
+    else:
+        broadcast(message, sender=username, encrypt=True)
+    return True  # Continue client loop
+
+def cleanup_client(username):
+    """Performs cleanup operations when a client disconnects."""
+    for group_name, members in list(groups.items()):
+        if username in members:
+            members.remove(username)
+            for other_user in members:
+                if other_user in clients:
+                    try:
+                        clients[other_user].sendall(f"{username} left group '{group_name}' (disconnected).\n".encode('utf-8'))
+                    except:
+                        pass
+            if not members:
+                del groups[group_name]
+
+    if username in encryption_keys:
+        del encryption_keys[username]
+
     if username in clients:
         del clients[username]
-    print(f"[-] {username} disconnected from {addr}")
+    print(f"[-] {username} disconnected")
+
+
+def initialize_client(client_sock, addr):
+    """Initializes a new client connection."""
+    client_sock.sendall(b"Enter username: ")
+    username = client_sock.recv(1024).decode('utf-8').strip()
+
+    if not username or not re.match("^[A-Za-z0-9_]+$", username) or username in clients:
+        client_sock.sendall(b"Invalid/duplicate username.\n")
+        client_sock.close()
+        return None  # Indicate failure
+
+    clients[username] = client_sock
+    print(f"[+] {username} connected ({addr})")
+    broadcast(f"{username} joined.\n", sender=username)
+    client_sock.sendall(b"Welcome!\n")
+    return username
+
+def client_thread(client_sock, addr):
+    """Handles a single client connection."""
+    try:
+        username = initialize_client(client_sock, addr)
+        if username is None:
+            return  # Initialization failed
+
+        while True:
+            try:
+                data = client_sock.recv(1024)
+                if not data:
+                    break
+                message = data.decode('utf-8').strip()
+                if not message:
+                    continue
+
+                if not process_message(username, message):
+                    break  # process_message indicated to exit
+
+            except ConnectionResetError:
+                break
+            except Exception as e:
+                print(f"Error in thread ({username}): {e}")
+                break
+    finally:
+        if username: # if username is defined
+            cleanup_client(username)
+        if client_sock: # if client_sock is defined
+          client_sock.close()
+
+
+
+COMMANDS_HELP = """
+Available commands:
+@quit - Disconnect from the server.
+@names - List all connected users.
+@<username> <message> - Send a private message to the specified user.
+@group set <groupname> <user1, user2, ...> - Create a new group.
+@group send <groupname> <message> - Send a message to a group.
+@group leave <groupname> - Leave a group.
+@group delete <groupname> - Delete a group.
+@history - Display your chat history.
+@help - Show this help message.
+@encrypt on - Initiate encrypted communication.
+"""
 
 def main():
+    """Main server loop."""
     if len(sys.argv) < 2:
         print(f"Usage: python {sys.argv[0]} <port>")
         sys.exit(1)
 
     port = int(sys.argv[1])
     server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Allow address reuse
     server_socket.bind((HOST, port))
-    server_socket.listen(5)
+    server_socket.listen(5)  # Listen for up to 5 connections
     print(f"Server started on port {port}. Waiting for connections...")
 
     try:
         while True:
-            try:
-                client_sock, addr = server_socket.accept()
-                t = threading.Thread(target=client_thread, args=(client_sock, addr), daemon=True)
-                t.start()
-            except Exception as e:
-                print(f"Error accepting connection: {e}")
+            client_sock, addr = server_socket.accept()  # Accept new connection
+            client_thread_instance = threading.Thread(
+                target=client_thread,
+                args=(client_sock, addr),
+                daemon=True  # Allow main program to exit even if threads are running
+            )
+            client_thread_instance.start()
     except KeyboardInterrupt:
-        print("\nServer is shutting down...")
-        # Gracefully notify all connected clients
-        for user, sock in list(clients.items()):
+        print("\nServer shutting down...")
+        # Notify all connected clients
+        for _, sock in list(clients.items()):
             try:
-                sock.sendall(b"Server is shutting down. Closing connection...\n")
+                sock.sendall(b"Server shutting down.\n")
+                sock.close()
             except:
-                pass
-            sock.close()
-        clients.clear()
+                pass  # Don't crash if sending fails
     finally:
         server_socket.close()
-        print("Server socket closed.")
 
 if __name__ == "__main__":
     main()

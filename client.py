@@ -1,3 +1,4 @@
+# client.py (FIXED)
 import socket
 import sys
 import threading
@@ -7,201 +8,204 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 import base64
 import os
+import queue
+import msvcrt
 
-# Encryption Utilities
 def generate_key(password: str, salt: bytes) -> bytes:
-    """Derives a secure key from a password using PBKDF2."""
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
         salt=salt,
-        iterations=390000,  # Adjust for performance/security
+        iterations=390000,
         backend=default_backend()
     )
-    key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
-    return key
+    return base64.urlsafe_b64encode(kdf.derive(password.encode()))
 
 def encrypt_message(message: str, key: bytes) -> bytes:
-    """Encrypts a message using Fernet (AES)."""
     f = Fernet(key)
-    encrypted_message = f.encrypt(message.encode('utf-8'))
-    return encrypted_message
+    return f.encrypt(message.encode('utf-8'))
 
 def decrypt_message(encrypted_message: bytes, key: bytes) -> str:
-    """Decrypts a message using Fernet."""
     f = Fernet(key)
-    decrypted_message = f.decrypt(encrypted_message).decode('utf-8')
-    return decrypted_message
+    return f.decrypt(encrypted_message).decode('utf-8')
 
-# Global Encryption State
-encryption_enabled = False
-encryption_key = None
+def receive_messages(sock, message_queue):
+    global encryption_enabled, encryption_key, username
+    buffer = b""
 
-# Message Receiver
-
-def receive_messages(sock):
-    """
-    Continuously listen for server messages.
-    If encryption is enabled, try to decrypt messages that follow the user message format.
-    """
-    global encryption_enabled, encryption_key
     while True:
         try:
             data = sock.recv(1024)
             if not data:
-                print("Disconnected from server.")
+                message_queue.put("Disconnected from server.\n")
                 break
-            # All messages are sent as UTF-8–encoded text.
-            message = data.decode('utf-8')
-            # If encryption is active, assume that chat messages from other users
-            # are in the format: "[<prefix>] <encrypted_text>" (for broadcast, PM, or group messages).
-            # Control or system messages (that do not start with '[') are printed as is.
-            if encryption_enabled:
-                if message.startswith('['):
-                    idx = message.find("] ")
-                    if idx != -1:
-                        prefix = message[:idx+2]  # e.g. "[Alice] " or "[PM from Bob] "
-                        enc_text = message[idx+2:].strip()
-                        try:
-                            # Try to decrypt the text.
-                            decrypted_msg = decrypt_message(enc_text.encode('utf-8'), encryption_key)
-                            print(f"{prefix}{decrypted_msg}")
-                        except Exception as de:
-                            # If decryption fails, fallback to printing the raw message.
-                            print(f"Decryption Error: {de}\nRaw message: {message}")
-                    else:
-                        print(message, end="")
+
+            buffer += data
+
+            while True:
+                newline_index = buffer.find(b'\n')
+                if newline_index == -1:
+                    break
+
+                message_bytes = buffer[:newline_index + 1]
+                buffer = buffer[newline_index + 1:]
+
+                try:
+                    message = message_bytes.decode('utf-8')
+                except UnicodeDecodeError:
+                    message = message_bytes.decode('latin-1')
+
+                parts = message.split()
+                if len(parts) == 3 and parts[1] == 'salt' and parts[0].startswith('@'):
+                    sender_username = parts[0][1:]
+                    received_salt = base64.b64decode(parts[2])
+                    if sender_username != username:
+                        message_queue.put(f"Enter encryption password for {sender_username}: ")
+                        message_queue.put((sender_username, received_salt))  # Put salt in queue
+                    continue
+
+                if encryption_enabled:
+                    try:
+                        parts = message.split("] ", 1)
+                        if len(parts) > 1:
+                            prefix = parts[0] + "] "
+                            encrypted_part = parts[1].strip()
+                            decrypted_msg = decrypt_message(encrypted_part.encode('latin-1'), encryption_key)  # Corrected line
+                            message_queue.put(prefix + decrypted_msg)
+                        else:
+                            # Handle cases where there's no prefix (unlikely, but good practice)
+                            try:
+                                decrypted_msg = decrypt_message(message.encode('latin-1'), encryption_key)
+                                message_queue.put(decrypted_msg)
+                            except:
+                                message_queue.put(message) # not encrypted
+
+                    except Exception as e:
+                        message_queue.put(f"Decryption Error: {e}, Raw message: {message}")
                 else:
-                    print(message, end="")
-            else:
-                print(message, end="")
+                    message_queue.put(message)
+
         except Exception as e:
-            print(f"\nConnection lost or error: {e}")
+            message_queue.put(f"\nConnection lost or error: {e}")
             break
+
     sock.close()
     sys.exit(0)
 
-# Main Client Function
+encryption_enabled = False
+encryption_key = None
+username = None
+
 def main():
-    global encryption_enabled, encryption_key
+    global encryption_enabled, encryption_key, username
     if len(sys.argv) < 3:
         print("Usage: python client.py <server_host> <port>")
         sys.exit(1)
+
     server_host = sys.argv[1]
     port = int(sys.argv[2])
+
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     try:
         sock.connect((server_host, port))
     except Exception as e:
         print(f"Connection error: {e}")
         sys.exit(1)
-    threading.Thread(target=receive_messages, args=(sock,), daemon=True).start()
-    print("Connected to server. Type your messages or commands below.")
+
+    message_queue = queue.Queue()
+    threading.Thread(target=receive_messages, args=(sock, message_queue), daemon=True).start()
+
     try:
         while True:
-            user_input = input('')
-            if not user_input:
-                continue
-            lower_input = user_input.strip().lower()
-            # Encryption Control Commands (sent as plain text)
-            if lower_input == '@encrypt on':
-                password = input("Enter encryption password: ")
-                salt = os.urandom(16)  # Generate a random salt
-                encryption_key = generate_key(password, salt)
-                # Send the salt to the server so that others may share the key if desired.
-                sock.sendall(f"@salt {base64.b64encode(salt).decode('utf-8')}".encode('utf-8'))
-                encryption_enabled = True
-                print("Encryption enabled.")
-                continue
-            elif lower_input == '@encrypt off':
-                encryption_enabled = False
-                encryption_key = None
-                print("Encryption disabled.")
-                sock.sendall(user_input.encode('utf-8'))
-                continue
-            elif lower_input.startswith('@salt'):
-                # When another user sends a salt, you can choose to join encryption.
-                parts = user_input.split()
-                if len(parts) >= 2:
-                    received_salt = base64.b64decode(parts[1])
-                    password = input("Enter encryption password: ")
+            try:
+                message = message_queue.get(block=False)
+                if isinstance(message, tuple):
+                    sender_username, received_salt = message
+                    password = input()
                     encryption_key = generate_key(password, received_salt)
+                    # Notify server about the key
+                    sock.sendall(f"set encryption {sender_username} {encryption_key.decode('latin-1')}\n".encode('utf-8'))
                     encryption_enabled = True
-                    print("Encryption is enabled with the shared key.")
-                sock.sendall(user_input.encode('utf-8'))
-                continue
-
-            # Control Commands (sent as plain text)
-            # Commands like @names, @history, and @quit must be sent without encryption.
-            elif lower_input == '@names':  # Corrected: Added elif for @names
-                sock.sendall(user_input.encode('utf-8'))
-                continue
-            elif lower_input == '@history': # Corrected: Added elif for @history
-                sock.sendall(user_input.encode('utf-8'))
-                continue
-            elif lower_input == '@help':  # Corrected: Added elif for @help
-                sock.sendall(user_input.encode('utf-8'))
-                continue
-            elif lower_input == '@quit': # Corrected:  Put quit after help and other commands
-                sock.sendall(user_input.encode('utf-8'))
-                print("You have quit the chat.")
-                break
-
-
-            # Group commands:
-            if lower_input.startswith('@group'):
-                tokens = user_input.split()
-                if len(tokens) < 2:
-                    print("Invalid group command.")
-                    continue
-                # For group send, we encrypt the message portion if encryption is enabled.
-                if tokens[1].lower() == 'send':
-                    if len(tokens) < 4:
-                        print("Invalid group send command format. Use: @group send <groupName> <message>")
-                        continue
-                    groupname = tokens[2]
-                    message_body = ' '.join(tokens[3:])
-                    if encryption_enabled:
-                        encrypted_msg = encrypt_message(message_body, encryption_key)
-                        # The encrypted text is decoded using latin-1 so that it can be embedded in a UTF-8 string.
-                        sock.sendall(f"@group send {groupname} {encrypted_msg.decode('latin-1')}".encode('utf-8'))
-                    else:
-                        sock.sendall(user_input.encode('utf-8'))
+                    print(f"Encryption is enabled with a shared key from {sender_username}.\n")
                 else:
-                    # For other group commands (set, leave, delete), send as plain text.
-                    sock.sendall(user_input.encode('utf-8'))
-                continue
+                    print(message, end="")
+            except queue.Empty:
+                pass
 
-            # Private messages:
-            # If a message starts with '@' (but not '@group' or an encryption command), assume it's a private message.
-            if user_input.startswith('@'):
-                tokens = user_input.split()
-                if len(tokens) < 2:
-                    print("Invalid private message format. Use: @username <message>")
-                    continue
-                # Here, if encryption is enabled, encrypt the message body.
-                if encryption_enabled:
-                    recipient = tokens[0][1:]
-                    message_body = ' '.join(tokens[1:])
-                    encrypted_msg = encrypt_message(message_body, encryption_key)
-                    sock.sendall(f"@{recipient} {encrypted_msg.decode('latin-1')}".encode('utf-8'))
-                else:
-                    sock.sendall(user_input.encode('utf-8'))
-                continue
-            # Broadcast Messages
-            # For regular messages (broadcast), if encryption is enabled then encrypt them.
-            if encryption_enabled:
-                encrypted_msg = encrypt_message(user_input, encryption_key)
-                # Send the encrypted broadcast message as text.
-                # The server will prepend the sender’s name, so the final format becomes:
-                #   "[username] <encrypted_text>\n"
-                sock.sendall(encrypted_msg.decode('latin-1').encode('utf-8'))
-            else:
-                sock.sendall(user_input.encode('utf-8'))
+            if msvcrt.kbhit():
+                user_input = msvcrt.getch().decode('utf-8', errors='ignore')
+
+                if user_input == '\b':
+                    print('\b \b', end='', flush=True)
+                    if 'current_input' in locals() and len(current_input) > 0:
+                        current_input = current_input[:-1]
+                elif user_input == '\r':
+                    if 'current_input' in locals():
+                        user_input = current_input + '\n'
+                        print('\n', end='', flush=True)
+
+                        if not user_input.strip():
+                            current_input = ""
+                            continue
+
+                        if username is None:
+                            username = user_input.strip()
+                            sock.sendall(f"{username}\n".encode('utf-8')) # send username
+                            current_input = "" # reset
+                            continue
+
+                        if user_input.strip().lower() == '@encrypt on':
+                            password = input("Enter encryption password: ")
+                            salt = os.urandom(16)
+                            encryption_key = generate_key(password, salt)
+                            sock.sendall(f"@salt {base64.b64encode(salt).decode('utf-8')}\n".encode('utf-8'))
+                            print("Encryption enabled request sent.\n")
+                            current_input = ""
+                            continue
+
+                        elif user_input.strip().lower() == '@encrypt off':
+                            encryption_enabled = False
+                            encryption_key = None
+                            print("Encryption disabled.\n")
+                            current_input = ""
+                            continue
+
+                        if encryption_enabled:
+                            if user_input.startswith('@') and not user_input.startswith('@group'):
+                                tokens = user_input.split()
+                                recipient = tokens[0][1:]
+                                message = ' '.join(tokens[1:])
+                                encrypted_msg = encrypt_message(message, encryption_key)
+                                sock.sendall(f"@{recipient} ".encode('utf-8') + encrypted_msg) # as bytes
+
+                            elif user_input.startswith('@group send'):
+                                tokens = user_input.split()
+                                groupname = tokens[2]
+                                message = ' '.join(tokens[3:])
+                                encrypted_msg = encrypt_message(message, encryption_key)
+                                sock.sendall(f"@group send {groupname} ".encode('utf-8') + encrypted_msg) # as bytes
+                            else:
+                                encrypted_msg = encrypt_message(user_input, encryption_key)
+                                sock.sendall(encrypted_msg)
+                        else:
+                            sock.sendall(user_input.encode('utf-8'))
+
+                        if user_input.strip() == '@quit':
+                            print("You have quit the chat.\n")
+                            break
+
+                        current_input = ""
+
+                elif user_input:
+                    if 'current_input' not in locals():
+                        current_input = ""
+                    current_input += user_input
+                    print(user_input, end='', flush=True)
 
     except KeyboardInterrupt:
         print("Closing client...")
-    sock.close()
+    finally:
+        sock.close()
 
 if __name__ == "__main__":
     main()
