@@ -1,4 +1,3 @@
-# client.py (FIXED)
 import socket
 import sys
 import threading
@@ -11,7 +10,9 @@ import os
 import queue
 import msvcrt
 
+
 def generate_key(password: str, salt: bytes) -> bytes:
+    """Derives a secure key from a password using PBKDF2."""
     kdf = PBKDF2HMAC(
         algorithm=hashes.SHA256(),
         length=32,
@@ -19,17 +20,25 @@ def generate_key(password: str, salt: bytes) -> bytes:
         iterations=390000,
         backend=default_backend()
     )
-    return base64.urlsafe_b64encode(kdf.derive(password.encode()))
+    key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+    return key
 
 def encrypt_message(message: str, key: bytes) -> bytes:
+    """Encrypts a message using Fernet (AES)."""
     f = Fernet(key)
-    return f.encrypt(message.encode('utf-8'))
+    encrypted_message = f.encrypt(message.encode('utf-8'))
+    return encrypted_message
 
 def decrypt_message(encrypted_message: bytes, key: bytes) -> str:
+    """Decrypts a message using Fernet."""
     f = Fernet(key)
-    return f.decrypt(encrypted_message).decode('utf-8')
+    decrypted_message = f.decrypt(encrypted_message).decode('utf-8')
+    return decrypted_message
 
 def receive_messages(sock, message_queue):
+    """
+    Continuously listen for server messages, decrypt if necessary, and print.
+    """
     global encryption_enabled, encryption_key, username
     buffer = b""
 
@@ -61,25 +70,24 @@ def receive_messages(sock, message_queue):
                     received_salt = base64.b64decode(parts[2])
                     if sender_username != username:
                         message_queue.put(f"Enter encryption password for {sender_username}: ")
-                        message_queue.put((sender_username, received_salt))  # Put salt in queue
+                        message_queue.put((sender_username, received_salt))
                     continue
 
                 if encryption_enabled:
                     try:
                         parts = message.split("] ", 1)
-                        if len(parts) > 1:
-                            prefix = parts[0] + "] "
-                            encrypted_part = parts[1].strip()
-                            decrypted_msg = decrypt_message(encrypted_part.encode('latin-1'), encryption_key)  # Corrected line
-                            message_queue.put(prefix + decrypted_msg)
+                        if len(parts) > 1 and parts[0].startswith("[PM from"):
+                            encrypted_start = message_bytes.find(b"] ") + 2
+                            encrypted_data = message_bytes[encrypted_start:].strip()
+                            decrypted_msg = decrypt_message(encrypted_data, encryption_key)
+                            message_queue.put(f"{parts[0]}] {decrypted_msg}")
+                        elif len(parts) > 1 and parts[0].find(" -> ") > 0:
+                            encrypted_start = message_bytes.find(b"] ") + 2
+                            encrypted_data = message_bytes[encrypted_start:].strip()
+                            decrypted_msg = decrypt_message(encrypted_data, encryption_key)
+                            message_queue.put(f"{parts[0]}] {decrypted_msg}")
                         else:
-                            # Handle cases where there's no prefix (unlikely, but good practice)
-                            try:
-                                decrypted_msg = decrypt_message(message.encode('latin-1'), encryption_key)
-                                message_queue.put(decrypted_msg)
-                            except:
-                                message_queue.put(message) # not encrypted
-
+                            message_queue.put(message)
                     except Exception as e:
                         message_queue.put(f"Decryption Error: {e}, Raw message: {message}")
                 else:
@@ -92,6 +100,8 @@ def receive_messages(sock, message_queue):
     sock.close()
     sys.exit(0)
 
+
+# Global variables
 encryption_enabled = False
 encryption_key = None
 username = None
@@ -113,7 +123,11 @@ def main():
         sys.exit(1)
 
     message_queue = queue.Queue()
+
     threading.Thread(target=receive_messages, args=(sock, message_queue), daemon=True).start()
+
+    # --- Send a "ready" message to the server ---
+    sock.sendall(b"CLIENT_READY\n")  # Important: Send *after* starting the receive thread
 
     try:
         while True:
@@ -123,8 +137,6 @@ def main():
                     sender_username, received_salt = message
                     password = input()
                     encryption_key = generate_key(password, received_salt)
-                    # Notify server about the key
-                    sock.sendall(f"set encryption {sender_username} {encryption_key.decode('latin-1')}\n".encode('utf-8'))
                     encryption_enabled = True
                     print(f"Encryption is enabled with a shared key from {sender_username}.\n")
                 else:
@@ -139,6 +151,7 @@ def main():
                     print('\b \b', end='', flush=True)
                     if 'current_input' in locals() and len(current_input) > 0:
                         current_input = current_input[:-1]
+
                 elif user_input == '\r':
                     if 'current_input' in locals():
                         user_input = current_input + '\n'
@@ -150,23 +163,24 @@ def main():
 
                         if username is None:
                             username = user_input.strip()
-                            sock.sendall(f"{username}\n".encode('utf-8')) # send username
-                            current_input = "" # reset
-                            continue
 
                         if user_input.strip().lower() == '@encrypt on':
                             password = input("Enter encryption password: ")
                             salt = os.urandom(16)
                             encryption_key = generate_key(password, salt)
                             sock.sendall(f"@salt {base64.b64encode(salt).decode('utf-8')}\n".encode('utf-8'))
-                            print("Encryption enabled request sent.\n")
+                            encryption_enabled = True
+                            print("Encryption enabled.\n")
                             current_input = ""
                             continue
-
                         elif user_input.strip().lower() == '@encrypt off':
                             encryption_enabled = False
                             encryption_key = None
                             print("Encryption disabled.\n")
+                            current_input = ""
+                            continue
+                        elif user_input.strip().lower() == '@history':  # Add @history command
+                            sock.sendall(b"@history\n")
                             current_input = ""
                             continue
 
@@ -176,14 +190,13 @@ def main():
                                 recipient = tokens[0][1:]
                                 message = ' '.join(tokens[1:])
                                 encrypted_msg = encrypt_message(message, encryption_key)
-                                sock.sendall(f"@{recipient} ".encode('utf-8') + encrypted_msg) # as bytes
-
+                                sock.sendall(f"@{recipient} ".encode('utf-8') + encrypted_msg)
                             elif user_input.startswith('@group send'):
                                 tokens = user_input.split()
                                 groupname = tokens[2]
                                 message = ' '.join(tokens[3:])
                                 encrypted_msg = encrypt_message(message, encryption_key)
-                                sock.sendall(f"@group send {groupname} ".encode('utf-8') + encrypted_msg) # as bytes
+                                sock.sendall(f"@group send {groupname} ".encode('utf-8') + encrypted_msg)
                             else:
                                 encrypted_msg = encrypt_message(user_input, encryption_key)
                                 sock.sendall(encrypted_msg)
