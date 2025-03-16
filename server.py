@@ -3,6 +3,10 @@ import sys
 import threading
 import re
 from collections import defaultdict
+from cryptography.fernet import Fernet
+import base64
+from cryptography.hazmat.primitives import hashes
+from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 
 HOST = '0.0.0.0'  # Listen on all available interfaces
 
@@ -23,7 +27,49 @@ Available Commands:
 @group delete <group_name> - Delete a group.
 @history - View chat history.
 @help - Show this help message.
+
+Encryption Commands:
+@encrypt <password> <message> - Send an encrypted message
+@decrypt <password> <message> - Decrypt a received message
 """
+
+def generate_key(password):
+    """Generate encryption key from password"""
+    kdf = PBKDF2HMAC(
+        algorithm=hashes.SHA256(),
+        length=32,
+        salt=b'salt_',
+        iterations=100000,
+    )
+    key = base64.urlsafe_b64encode(kdf.derive(password.encode()))
+    return Fernet(key)
+
+def encrypt_message(message, password):
+    """Encrypt message with password"""
+    fernet = generate_key(password)
+    return fernet.encrypt(message.encode('utf-8'))
+
+def decrypt_message(encrypted_message, password):
+    """Decrypt message with password"""
+    try:
+        fernet = generate_key(password)
+        return fernet.decrypt(encrypted_message).decode('utf-8')
+    except:
+        return None
+
+def format_encrypted_message(encrypted_data):
+    """Format encrypted message for transmission"""
+    return f"ENC:{base64.b64encode(encrypted_data).decode('utf-8')}"
+
+def parse_encrypted_message(message):
+    """Parse encrypted message"""
+    if message.startswith('ENC:'):
+        try:
+            enc_data = base64.b64decode(message[4:])
+            return True, enc_data
+        except:
+            return False, message
+    return False, message
 
 def broadcast(message, sender=None):
     """
@@ -212,18 +258,57 @@ def client_thread(client_sock, addr):
             message = data.decode('utf-8').strip()
             if not message:
                 continue
-            tokens_original = message.split()
-            tokens_lower = message.lower().split()
-            if not tokens_lower:
+            tokens = message.split()
+            if not tokens:
                 continue
-            # Check for special commands (case-insensitive)
-            if tokens_lower[0] == '@quit':
-                # Graceful quit
-                broadcast(f"{username} has left the chat.\n", sender=username)
+
+            # Handle encryption commands
+            if tokens[0].lower() == '@encrypt':
+                if len(tokens) < 3:
+                    client_sock.sendall(b"Usage: @encrypt password message\n")
+                    continue
+                
+                password = tokens[1]
+                msg_content = ' '.join(tokens[2:])
+                
+                try:
+                    encrypted = encrypt_message(msg_content, password)
+                    formatted_msg = format_encrypted_message(encrypted)
+                    
+                    # Handle as regular message
+                    broadcast(f"[{username}] {formatted_msg}\n", username)
+                except:
+                    client_sock.sendall(b"Encryption failed. Please try again.\n")
+                    
+            elif tokens[0].lower() == '@decrypt':
+                if len(tokens) < 3:
+                    client_sock.sendall(b"Usage: @decrypt password encrypted_message\n")
+                    continue
+                
+                password = tokens[1]
+                enc_message = ' '.join(tokens[2:])
+                
+                is_encrypted, enc_data = parse_encrypted_message(enc_message)
+                if not is_encrypted:
+                    client_sock.sendall(b"Not a valid encrypted message.\n")
+                    continue
+                
+                try:
+                    decrypted = decrypt_message(enc_data, password)
+                    if decrypted:
+                        client_sock.sendall(f"Decrypted message: {decrypted}\n".encode('utf-8'))
+                    else:
+                        client_sock.sendall(b"Failed to decrypt. Wrong password?\n")
+                except:
+                    client_sock.sendall(b"Decryption failed. Invalid message format.\n")
+                    
+            # Handle regular commands
+            elif tokens[0] == '@quit':
+                broadcast(f"{username} has left the chat.\n", username)
                 break
-            elif tokens_lower[0] == '@names':
+            elif tokens[0] == '@names':
                 list_users(username)
-            elif tokens_lower[0] == '@history':
+            elif tokens[0] == '@history':
                 # Retrieve and send chat history
                 history = chat_history[username]
                 if history:
@@ -231,21 +316,28 @@ def client_thread(client_sock, addr):
                         client_sock.sendall(msg.encode('utf-8'))
                 else:
                     client_sock.sendall(b"No chat history found.\n")
-            elif tokens_lower[0] == '@help':
+            elif tokens[0] == '@help':
                 # Send the help message to the client
                 client_sock.sendall(COMMANDS_HELP.encode('utf-8'))
-            elif tokens_lower[0].startswith('@group'):
-                handle_group_command(username, tokens_original)
-            elif tokens_lower[0].startswith('@'):
+            elif tokens[0].startswith('@group'):
+                handle_group_command(username, tokens)
+            elif tokens[0].startswith('@'):
                 # Handle private message or unknown command
-                recipient = tokens_original[0][1:]
-                pm_body = ' '.join(tokens_original[1:]) if len(tokens_original) > 1 else ''
+                recipient = tokens[0][1:]
+                pm_body = ' '.join(tokens[1:]) if len(tokens) > 1 else ''
                 if recipient in clients:
                     send_private(username, recipient, pm_body)
                 else:
                     client_sock.sendall(b"Invalid command. Use @help\n")
             else:
-                broadcast(f"[{username}] {message}\n", sender=username)
+                # Check if message is encrypted
+                is_encrypted, content = parse_encrypted_message(message)
+                if is_encrypted:
+                    # Pass encrypted message as is
+                    broadcast(f"[{username}] {message}\n", username)
+                else:
+                    # Regular unencrypted message
+                    broadcast(f"[{username}] {message}\n", username)
         except ConnectionResetError:
             break
         except Exception as e:
