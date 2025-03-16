@@ -189,6 +189,15 @@ def handle_group_command(sender, tokens_original):
             f"You have left the group '{group_name}'.\n".encode('utf-8')
         )
 
+        # Notify other group members that the user has left.  THIS IS THE KEY ADDITION.
+        for user in groups[group_name]:
+            if user in clients:
+                try:
+                    clients[user].sendall(f"{sender} has left the group '{group_name}'.\n".encode('utf-8'))
+                except:
+                    print(f"Failed to send group leave notification to {user}")
+
+
     elif subcommand == 'delete':
         # @group delete <groupName>
         if group_name not in groups:

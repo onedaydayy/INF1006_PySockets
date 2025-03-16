@@ -8,7 +8,7 @@ from cryptography.hazmat.backends import default_backend
 import base64
 import os
 
-# Encryption Utilities 
+# Encryption Utilities
 def generate_key(password: str, salt: bytes) -> bytes:
     """Derives a secure key from a password using PBKDF2."""
     kdf = PBKDF2HMAC(
@@ -95,12 +95,12 @@ def handle_encrypted_message(message: str, prefix: str) -> None:
     except:
         print("\nPassword input cancelled")
 
-# Global Encryption State 
+# Global Encryption State
 encryption_enabled = False
 encryption_key = None
 encryption_password = None
 
-# Message Receiver 
+# Message Receiver
 
 def receive_messages(sock):
     """
@@ -170,7 +170,7 @@ def receive_messages(sock):
     sock.close()
     sys.exit(0)
 
-# Main Client Function 
+# Main Client Function
 def main():
     global encryption_enabled, encryption_key, encryption_password
     if len(sys.argv) < 3:
@@ -191,39 +191,57 @@ def main():
             user_input = input('')
             if not user_input:
                 continue
-            
-            tokens = user_input.split()
-            if not tokens:
+            lower_input = user_input.strip().lower()
+            # Encryption Control Commands (sent as plain text)
+            if lower_input == '@encrypt on':
+                password = input("Enter encryption password: ")
+                salt = os.urandom(16)  # Generate a random salt
+                encryption_key = generate_key(password, salt)
+                # Send the salt to the server so that others may share the key if desired.
+                sock.sendall(f"@salt {base64.b64encode(salt).decode('utf-8')}".encode('utf-8'))
+                encryption_enabled = True
+                print("Encryption enabled.")
                 continue
-
-            # Handle encryption mode
-            if tokens[0].lower() == '@encrypt' and tokens[1].lower() == 'on':
-                print("Encryption mode ON")
-                print("Please enter encryption password: ", end='', flush=True)
-                encryption_password = input()
-                if encryption_password:
-                    encryption_enabled = True
-                    salt = b'salt_'  # Using same salt as server
-                    encryption_key = generate_key(encryption_password, salt)
-                    print("Encryption enabled. All messages will be encrypted.")
-                else:
-                    print("No password provided. Encryption not enabled.")
-                continue
-                
-            elif tokens[0].lower() == '@encrypt' and tokens[1].lower() == 'off':
+            elif lower_input == '@encrypt off':
                 encryption_enabled = False
                 encryption_key = None
-                encryption_password = None
-                print("Encryption disabled. Messages will be sent in plaintext.")
+                print("Encryption disabled.")
+                sock.sendall(user_input.encode('utf-8'))
+                continue
+            elif lower_input.startswith('@salt'):
+                # When another user sends a salt, you can choose to join encryption.
+                parts = user_input.split()
+                if len(parts) >= 2:
+                    received_salt = base64.b64decode(parts[1])
+                    password = input("Enter encryption password: ")
+                    encryption_key = generate_key(password, received_salt)
+                    encryption_enabled = True
+                    print("Encryption is enabled with the shared key.")
+                sock.sendall(user_input.encode('utf-8'))
                 continue
 
-            # If encryption is enabled, encrypt all regular messages
-            if encryption_enabled and encryption_key and not user_input.startswith('@'):
-                try:
-                    encrypted = encrypt_message(user_input, encryption_key)
-                    formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
-                    sock.sendall(formatted_msg.encode('utf-8'))
-                    print("Message encrypted and sent.")
+            # Control Commands (sent as plain text)
+            # Commands like @names, @history, and @quit must be sent without encryption.
+            elif lower_input == '@names':  # Corrected: Added elif for @names
+                sock.sendall(user_input.encode('utf-8'))
+                continue
+            elif lower_input == '@history': # Corrected: Added elif for @history
+                sock.sendall(user_input.encode('utf-8'))
+                continue
+            elif lower_input == '@help':  # Corrected: Added elif for @help
+                sock.sendall(user_input.encode('utf-8'))
+                continue
+            elif lower_input == '@quit': # Corrected:  Put quit after help and other commands
+                sock.sendall(user_input.encode('utf-8'))
+                print("You have quit the chat.")
+                break
+
+
+            # Group commands:
+            if lower_input.startswith('@group'):
+                tokens = user_input.split()
+                if len(tokens) < 2:
+                    print("Invalid group command.")
                     continue
                 except Exception as e:
                     print(f"Encryption failed: {e}")
@@ -261,9 +279,15 @@ def main():
                 else:
                     # Send regular command
                     sock.sendall(user_input.encode('utf-8'))
-                    if user_input.lower() == '@quit':
-                        print("Disconnecting from server...")
-                        break
+                continue
+            # Broadcast Messages
+            # For regular messages (broadcast), if encryption is enabled then encrypt them.
+            if encryption_enabled:
+                encrypted_msg = encrypt_message(user_input, encryption_key)
+                # Send the encrypted broadcast message as text.
+                # The server will prepend the sender’s name, so the final format becomes:
+                #   "[username] <encrypted_text>\n"
+                sock.sendall(encrypted_msg.decode('latin-1').encode('utf-8'))
             else:
                 sock.sendall(user_input.encode('utf-8'))
 
