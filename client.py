@@ -8,7 +8,7 @@ from cryptography.hazmat.backends import default_backend
 import base64
 import os
 
-# Encryption Utilities 
+# Encryption Utilities
 def generate_key(password: str, salt: bytes) -> bytes:
     """Derives a secure key from a password using PBKDF2."""
     kdf = PBKDF2HMAC(
@@ -33,11 +33,11 @@ def decrypt_message(encrypted_message: bytes, key: bytes) -> str:
     decrypted_message = f.decrypt(encrypted_message).decode('utf-8')
     return decrypted_message
 
-# Global Encryption State 
+# Global Encryption State
 encryption_enabled = False
 encryption_key = None
 
-# Message Receiver 
+# Message Receiver
 
 def receive_messages(sock):
     """
@@ -81,7 +81,7 @@ def receive_messages(sock):
     sock.close()
     sys.exit(0)
 
-# Main Client Function 
+# Main Client Function
 def main():
     global encryption_enabled, encryption_key
     if len(sys.argv) < 3:
@@ -103,7 +103,7 @@ def main():
             if not user_input:
                 continue
             lower_input = user_input.strip().lower()
-            # Encryption Control Commands (sent as plain text) 
+            # Encryption Control Commands (sent as plain text)
             if lower_input == '@encrypt on':
                 password = input("Enter encryption password: ")
                 salt = os.urandom(16)  # Generate a random salt
@@ -131,14 +131,22 @@ def main():
                 sock.sendall(user_input.encode('utf-8'))
                 continue
 
-            # Control Commands (sent as plain text) 
+            # Control Commands (sent as plain text)
             # Commands like @names, @history, and @quit must be sent without encryption.
-            if lower_input in ['@names', '@history', '@quit']:
+            elif lower_input == '@names':  # Corrected: Added elif for @names
                 sock.sendall(user_input.encode('utf-8'))
-                if lower_input == '@quit':
-                    print("You have quit the chat.")
-                    break
                 continue
+            elif lower_input == '@history': # Corrected: Added elif for @history
+                sock.sendall(user_input.encode('utf-8'))
+                continue
+            elif lower_input == '@help':  # Corrected: Added elif for @help
+                sock.sendall(user_input.encode('utf-8'))
+                continue
+            elif lower_input == '@quit': # Corrected:  Put quit after help and other commands
+                sock.sendall(user_input.encode('utf-8'))
+                print("You have quit the chat.")
+                break
+
 
             # Group commands:
             if lower_input.startswith('@group'):
@@ -180,7 +188,7 @@ def main():
                 else:
                     sock.sendall(user_input.encode('utf-8'))
                 continue
-            # Broadcast Messages 
+            # Broadcast Messages
             # For regular messages (broadcast), if encryption is enabled then encrypt them.
             if encryption_enabled:
                 encrypted_msg = encrypt_message(user_input, encryption_key)
