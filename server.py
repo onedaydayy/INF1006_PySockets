@@ -29,8 +29,8 @@ Available Commands:
 @help - Show this help message.
 
 Encryption Commands:
-@encrypt <password> <message> - Send an encrypted message
-@decrypt <password> <message> - Decrypt a received message
+@encrypt on - Starts an encryption session
+@encrypt off - Stops the encryption session
 """
 
 def generate_key(password):
