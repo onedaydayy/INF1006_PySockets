@@ -356,7 +356,7 @@ class ClientHandler:
         if subcommand == 'set':
             if len(tokens) < 4:
                 self.client.send_message("No members specified for group set.\n")
-            return
+                return
 
             member_string = ' '.join(tokens[3:])
             members = member_string.replace(',', ' ').split()
