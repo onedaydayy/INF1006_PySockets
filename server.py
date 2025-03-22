@@ -160,7 +160,7 @@ class GroupManager:
             return False, "You are not a member of this group"
         
         group.add_message(sender, message)
-        formatted_message = f"[{sender} -> {group_name}] {message}\n"
+        formatted_message = f"[{group_name}][{sender}] {message}\n"
 
         # Send to all group members
         for member in group.members:
@@ -264,27 +264,28 @@ class ClientHandler:
         
     def setup_username(self):
         """Handle initial username setup and validation"""
-        try:
-            self.client.socket.sendall(b"Enter a unique username: ")
-            username = self.client.socket.recv(1024).decode('utf-8').strip()
-            
-            if not username or not re.match("^[A-Za-z0-9_]+$", username):
-                self.client.socket.sendall(b"Invalid username.\n")
-                return False
+        while True:  # Keep trying until a valid username is provided
+            try:
+                self.client.socket.sendall(b"Enter a unique username: ")
+                username = self.client.socket.recv(1024).decode('utf-8').strip()
+                
+                if not username or not re.match("^[A-Za-z0-9_]+$", username):
+                    self.client.socket.sendall(b"Invalid username. Please try again with only letters, numbers, and underscores.\n")
+                    continue  # Ask for username again
 
-            if not self.client_manager.add_client(username, self.client):
-                self.client.socket.sendall(b"Username is already taken.\n")
-                return False
+                if not self.client_manager.add_client(username, self.client):
+                    self.client.socket.sendall(b"Username is already taken. Please try another username.\n")
+                    continue  # Ask for username again
 
-            self.client.username = username
-            print(f"[+] {username} connected from {self.client.address}")
-            self.client_manager.broadcast(f"{username} has joined the chat.\n", username)
-            self.client.send_message("Welcome to the chat!\n")
-            return True
+                self.client.username = username
+                print(f"[+] {username} connected from {self.client.address}")
+                self.client_manager.broadcast(f"{username} has joined the chat.\n", username)
+                self.client.send_message("Welcome to the chat!\n")
+                return True
 
-        except Exception as e:
-            print(f"Error during initial username setup: {e}")
-            return False
+            except Exception as e:
+                print(f"Error during initial username setup: {e}")
+                return False  # Only return False on connection errors
 
     # def handle_encryption_command(self, tokens):
     #     """Handle @encrypt and @decrypt commands"""

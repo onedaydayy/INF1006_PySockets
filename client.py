@@ -49,11 +49,35 @@ class Client:
         self.encryption_password = None
 
     def connect(self):
-        """Establish connection to the server and start message receiving thread."""
+        """Establish connection to the server and perform username negotiation."""
         try:
             self.sock.connect((self.server_host, self.port))
-            threading.Thread(target=self.receive_messages, daemon=True).start()
-            print("Connected to server. Type your messages or commands below.")
+            buffer = ""
+            while True:
+                data = self.sock.recv(1024).decode('utf-8')
+                buffer += data
+
+                # Handle server responses line-by-line
+                while "\n" in buffer or "Enter a unique username:" in buffer:
+                    if "Enter a unique username:" in buffer:
+                        print("Enter a unique username: ", end='')
+                        username = input().strip()
+                        self.sock.sendall(username.encode('utf-8'))
+                        buffer = ""  # Clear buffer to await next response
+                        break
+                    elif "Username is already taken" in buffer or "Invalid username" in buffer:
+                        print(buffer.strip())
+                        buffer = ""  # Wait for next username prompt
+                        # Don't break here, allow loop to continue
+                    elif "Welcome to the chat" in buffer:
+                        print(buffer.strip())
+                        buffer = ""
+                        threading.Thread(target=self.receive_messages, daemon=True).start()
+                        print("You can now start typing your messages.")
+                        return
+                    else:
+                        print(buffer.strip())
+                        buffer = ""
         except Exception as e:
             print(f"Connection error: {e}")
             sys.exit(1)
@@ -78,25 +102,36 @@ class Client:
         """Process incoming messages and handle encryption if necessary."""
         try:
             if message.startswith('['):
-                idx = message.find("] ")
-                if idx != -1:
-                    prefix = message[:idx+2]  # e.g., "[Alice] " or "[PM from Bob] "
-                    content = message[idx+2:].strip()
+                # Support formats like: [group][user] message
+                prefix_end = message.find("] ")
+                if prefix_end == -1:
+                    # Might be [group][user] format
+                    group_end = message.find("]")
+                    user_start = message.find("[", group_end + 1)
+                    user_end = message.find("]", user_start + 1)
+
+                    if group_end != -1 and user_end != -1:
+                        prefix = message[:user_end+1] + " "
+                        content = message[user_end+1:].strip()
+                    else:
+                        print(message, end='')  # fallback
+                        return
+                else:
+                    prefix = message[:prefix_end+2]
+                    content = message[prefix_end+2:].strip()
                     
-                    if content.startswith('ENC:'):
-                        print(f"\n[Encrypted]from: {prefix}Message received.")
-                        if self.encryption_enabled and self.encryption_key:
-                            try:
-                                enc_data = base64.b64decode(content[4:])
-                                decrypted = EncryptionUtils.decrypt_message(enc_data, self.encryption_key)
-                                print(f"[Decrypted Message] {prefix}{decrypted}")
-                            except Exception:
-                                print("Failed to decrypt message with current key.")
-                                self.prompt_for_decryption(prefix, content)
-                        else:
+                if content.startswith('ENC:'):
+                    print(f"\n[Encrypted]from: {prefix}Message received.")
+                    if self.encryption_enabled and self.encryption_key:
+                        try:
+                            enc_data = base64.b64decode(content[4:])
+                            decrypted = EncryptionUtils.decrypt_message(enc_data, self.encryption_key)
+                            print(f"[Decrypted Message] {prefix}{decrypted}")
+                        except Exception:
+                            print("Failed to decrypt message with current key.")
                             self.prompt_for_decryption(prefix, content)
                     else:
-                        print(message, end='')
+                        self.prompt_for_decryption(prefix, content)
                 else:
                     print(message, end='')
             else:
