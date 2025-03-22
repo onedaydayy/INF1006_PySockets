@@ -152,7 +152,7 @@ class Client:
                                     formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
                                     self.sock.sendall(formatted_msg.encode('utf-8'))
                                     print("[Encrypted] Message sent.")
-                                    break
+                                    #break
                                 except Exception as e:
                                     print(f"Encryption failed: {e}")
                         return True
