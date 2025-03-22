@@ -84,7 +84,7 @@ class Client:
                     content = message[idx+2:].strip()
                     
                     if content.startswith('ENC:'):
-                        print(f"\n{prefix}[ENCRYPTED] Message received.")
+                        print(f"\n[Encrypted]from: {prefix}Message received.")
                         if self.encryption_enabled and self.encryption_key:
                             try:
                                 enc_data = base64.b64decode(content[4:])

@@ -161,7 +161,7 @@ class GroupManager:
         
         group.add_message(sender, message)
         formatted_message = f"[{sender} -> {group_name}] {message}\n"
-        
+
         # Send to all group members
         for member in group.members:
             client_manager.send_message(member, formatted_message)
@@ -291,8 +291,8 @@ class ClientHandler:
         if tokens[0].lower() == '@encrypt':
             if len(tokens) < 3:
                 self.client.socket.sendall(b"Usage: @encrypt password message\n")
-                return
-            
+            return
+
             password = tokens[1]
             msg_content = ' '.join(tokens[2:])
             
@@ -356,8 +356,8 @@ class ClientHandler:
         if subcommand == 'set':
             if len(tokens) < 4:
                 self.client.send_message("No members specified for group set.\n")
-                return
-                
+            return
+
             member_string = ' '.join(tokens[3:])
             members = member_string.replace(',', ' ').split()
             if self.client.username not in members:
@@ -437,7 +437,7 @@ class ClientHandler:
             if recipient in self.client_manager.clients:
                 self.client_manager.send_private(self.client.username, recipient, pm_body)
             else:
-                self.client.socket.sendall(b"Invalid command. Use @help\n")
+                self.client.socket.sendall(b"Reminder: Invalid command. Use @help\n")
             return True
 
         # Handle regular messages
@@ -459,11 +459,11 @@ class ClientHandler:
                 data = self.client.socket.recv(1024)
                 if not data:
                     break
-                    
+                
                 message = data.decode('utf-8').strip()
                 if not message:
                     continue
-                    
+                
                 if not self.handle_message(message):
                     break
                     
