@@ -29,8 +29,8 @@ Available Commands:
 @help - Show this help message.
 
 Encryption Commands:
-@encrypt <password> <message> - Send an encrypted message
-@decrypt <password> <message> - Decrypt a received message
+@encrypt on - Enable the chat encryption
+@encrypt off - Disable the chat's encryption 
 """
 
 def generate_key(password):
@@ -283,12 +283,10 @@ def client_thread(client_sock, addr):
                 try:
                     encrypted = encrypt_message(msg_content, password)
                     formatted_msg = format_encrypted_message(encrypted)
-                    
-                    # Handle as regular message
+                        # Handle as regular message
                     broadcast(f"[{username}] {formatted_msg}\n", username)
                 except:
-                    client_sock.sendall(b"Encryption failed. Please try again.\n")
-                    
+                    client_sock.sendall(b"Encryption failed. Please try again.\n")     
             elif tokens[0].lower() == '@decrypt':
                 if len(tokens) < 3:
                     client_sock.sendall(b"Usage: @decrypt password encrypted_message\n")

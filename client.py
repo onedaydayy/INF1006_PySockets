@@ -84,31 +84,36 @@ def receive_messages(sock):
                         print(f"\n{prefix}[ENCRYPTED] Message received.")
                         
                         # If we're in encryption mode, try using the preset password first
-                        if encryption_enabled and encryption_password:
+                        while True:
+                            password = input("Enter password to decrypt (or type 'skip' to ignore): ")
+                            if password.lower() == "skip":
+                                print("Skipping decryption.")
+                                break
+
                             try:
                                 enc_data = base64.b64decode(content[4:])
-                                key = generate_key(encryption_password, b'salt_')
+                                salt = b'salt_'
+                                key = generate_key(password, salt)
                                 decrypted = decrypt_message(enc_data, key)
-                                print(f"[Encrypted Chat] {prefix}{decrypted}")
-                                continue
-                            except:
-                                # If preset password didn't work, prompt for a different one
-                                pass
+                                print(f"[Decrypted Message] {prefix}{decrypted}")
+                                break  # Exit the loop once decrypted successfully
+                            except Exception as e:
+                                print("Wrong password. Try again.")
                         
                         # Prompt for password
-                        password = input("Enter password to decrypt: ")
+                        #password = input("Enter password to decrypt: ")
                         
-                        try:
-                            enc_data = base64.b64decode(content[4:])
-                            salt = b'salt_'  # Using same salt as server
-                            key = generate_key(password, salt)
-                            decrypted = decrypt_message(enc_data, key)
-                            if decrypted:
-                                print(f"[Encrypted Chat] {prefix}{decrypted}")
-                            else:
-                                print(f"{prefix}[ENCRYPTED] Failed to decrypt - wrong password?")
-                        except Exception as e:
-                            print(f"{prefix}[ENCRYPTED] Failed to decrypt: {str(e)}")
+                        # try:
+                        #     enc_data = base64.b64decode(content[4:])
+                        #     salt = b'salt_'  # Using same salt as server
+                        #     key = generate_key(password, salt)
+                        #     decrypted = decrypt_message(enc_data, key)
+                        #     if decrypted:
+                        #         print(f"[Encrypted Chat] {prefix}{decrypted}")
+                        #     else:
+                        #         print(f"{prefix}[ENCRYPTED] Failed to decrypt - wrong password?")
+                        # except Exception as e:
+                        #     print(f"{prefix}[ENCRYPTED] Failed to decrypt: {str(e)}")
                     else:
                         # Message is not encrypted
                         print(message, end='')
@@ -150,7 +155,7 @@ def main():
                 continue
 
             # Handle encryption mode
-            if len(tokens) >= 2 and tokens[0].lower() == '@encrypt' and tokens[1].lower() == 'on':
+            elif len(tokens) >= 2 and tokens[0].lower() == '@encrypt' and tokens[1].lower() == 'on':
                 print("Encryption mode ON")
                 encryption_password = input("Enter encryption password: ")
                 if encryption_password:
@@ -158,6 +163,24 @@ def main():
                     encryption_key = generate_key(encryption_password, salt)
                     encryption_enabled = True
                     print("Encryption enabled. All messages will be encrypted.")
+                    
+                    # Prompt user to start sending messages
+                    while encryption_enabled:
+                        message = input("Enter message to encrypt (or type '@encrypt off' to disable): ")
+                        if message.lower() == "@encrypt off":
+                            encryption_enabled = False
+                            encryption_key = None
+                            encryption_password = None
+                            print("Encryption disabled.")
+                            break
+                        try:
+                            encrypted = encrypt_message(message, encryption_key)
+                            formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
+                            sock.sendall(formatted_msg.encode('utf-8'))
+                            print("Message encrypted and sent.")
+                        except Exception as e:
+                            print(f"Encryption failed: {e}")
+                
                 else:
                     print("No password provided. Encryption not enabled.")
                 continue
