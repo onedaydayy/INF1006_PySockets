@@ -67,155 +67,20 @@ def parse_encrypted_message(message):
     return False, message
 
 def broadcast(message, sender=None):
-    """
-    Send a message to every connected client (except the sender).
-    Also stores the message in sender's chat history.
-    """
-    for user, sock in list(clients.items()):
-        if user != sender:
-            try:
-                sock.sendall(message.encode('utf-8'))
-            except:
-                print(f"Failed to send message to {user}")
-
-    # Store in history (only if we actually have a sender)
-    if sender:
-        chat_history[sender].append(message)
-
+    """Deprecated: Use ClientManager.broadcast instead"""
+    pass
 
 def send_private(sender, recipient, msg):
-    """
-    Send a private message (and store it in both sender's and recipient's chat history).
-    """
-    if recipient not in clients:
-        # If user doesn't exist, let the sender know
-        if sender in clients:
-            clients[sender].sendall(f"User '{recipient}' not found.\n".encode('utf-8'))
-        return
-
-    try:
-        full_message = f"[PM from {sender}] {msg}\n"
-        clients[recipient].sendall(full_message.encode('utf-8'))
-        # Store in both users' histories
-        chat_history[sender].append(full_message)
-        chat_history[recipient].append(full_message)
-    except:
-        print(f"Failed to send private message to {recipient}")
-
+    """Deprecated: Use ClientManager.send_private instead"""
+    pass
 
 def handle_group_command(sender, tokens_original):
-    """
-    Handle commands starting with '@group' followed by
-    'set', 'send', 'leave', 'delete', etc.
-
-    Syntax examples:
-        @group set myGroup user1, user2
-        @group send myGroup Hello group
-        @group leave myGroup
-        @group delete myGroup
-    """
-    tokens_lower = [t.lower() for t in tokens_original]
-    if len(tokens_lower) < 3:
-        clients[sender].sendall(b"Invalid @group command format.\n")
-        return
-
-    subcommand = tokens_lower[1]
-    group_name = tokens_original[2]
-
-    if subcommand == 'set':
-        # @group set <groupName> user1, user2, ...
-        if len(tokens_original) < 4:
-            clients[sender].sendall(b"No members specified for group set.\n")
-            return
-        member_string = ' '.join(tokens_original[3:])
-        member_string = member_string.replace(',', ' ')
-        members = member_string.split()
-        # Ensure the creator is in the group
-        if sender not in members:
-            members.append(sender)
-
-        # Check if group already exists
-        if group_name in groups:
-            clients[sender].sendall(f"Group '{group_name}' already exists.\n".encode('utf-8'))
-            return
-
-        groups[group_name] = set(members)
-        clients[sender].sendall(
-            f"Group '{group_name}' created with members: {', '.join(members)}\n".encode('utf-8')
-        )
-
-    elif subcommand == 'send':
-        # @group send <groupName> <message>
-        if group_name not in groups:
-            clients[sender].sendall(f"Group '{group_name}' does not exist.\n".encode('utf-8'))
-            return
-        if sender not in groups[group_name]:
-            clients[sender].sendall(
-                f"You are not a member of '{group_name}'.\n".encode('utf-8')
-            )
-            return
-
-        message_body = ' '.join(tokens_original[3:])
-        full_message = f"[{sender} -> {group_name}] {message_body}\n"
-
-        # Send to all group members
-        for user in groups[group_name]:
-            if user in clients:
-                try:
-                    clients[user].sendall(full_message.encode('utf-8'))
-                except:
-                    print(f"Failed to send group message to {user}")
-                # Record in each member's chat history
-                chat_history[user].append(full_message)
-
-    elif subcommand == 'leave':
-        # @group leave <groupName>
-        if group_name not in groups:
-            clients[sender].sendall(f"Group '{group_name}' does not exist.\n".encode('utf-8'))
-            return
-        if sender not in groups[group_name]:
-            clients[sender].sendall(
-                f"You are not in group '{group_name}'.\n".encode('utf-8')
-            )
-            return
-
-        groups[group_name].remove(sender)
-        clients[sender].sendall(
-            f"You have left the group '{group_name}'.\n".encode('utf-8')
-        )
-
-        # Notify other group members that the user has left.  THIS IS THE KEY ADDITION.
-        for user in groups[group_name]:
-            if user in clients:
-                try:
-                    clients[user].sendall(f"{sender} has left the group '{group_name}'.\n".encode('utf-8'))
-                except:
-                    print(f"Failed to send group leave notification to {user}")
-
-
-    elif subcommand == 'delete':
-        # @group delete <groupName>
-        if group_name not in groups:
-            clients[sender].sendall(f"Group '{group_name}' does not exist.\n".encode('utf-8'))
-            return
-
-        # Delete the group altogether
-        del groups[group_name]
-        clients[sender].sendall(
-            f"Group '{group_name}' has been deleted.\n".encode('utf-8')
-        )
-
-    else:
-        clients[sender].sendall(b"Unknown @group subcommand.\n")
-
+    """Deprecated: Use ClientHandler.handle_group_command instead"""
+    pass
 
 def list_users(requester):
-    """
-    Sends the list of all connected usernames to the requester.
-    """
-    names_str = ", ".join(clients.keys())
-    clients[requester].sendall(f"Online users: {names_str}\n".encode('utf-8'))
-
+    """Deprecated: Use ClientManager.list_users instead"""
+    pass
 
 class Group:
     def __init__(self, name, creator):
@@ -365,9 +230,18 @@ class ClientManager:
         if recipient not in self.clients:
             return False, "User not found"
         
-        formatted_message = f"[PM from {sender}] {message}\n"
-        self.clients[recipient].send_message(formatted_message)
-        self.clients[sender].send_message(formatted_message)
+        # Send message to recipient
+        recipient_message = f"[PM from {sender}] {message}\n"
+        self.clients[recipient].send_message(recipient_message)
+        
+        # Send confirmation to sender
+        sender_message = f"[PM to {recipient}] Message sent.\n"
+        self.clients[sender].send_message(sender_message)
+        
+        # Add to both users' chat history
+        self.add_to_history(recipient, recipient_message)
+        self.add_to_history(sender, sender_message)
+        
         return True, "Message sent"
 
     def get_user_history(self, username):

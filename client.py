@@ -80,14 +80,11 @@ def receive_messages(sock):
                     
                     # Check if message is encrypted
                     if content.startswith('ENC:'):
-                        while True:
-                            # Message is encrypted
-                            print(f"\n{prefix}[ENCRYPTED] Message received.")
-                            #sys.stdout.flush()  # Ensure the message is printed immediately
+                        # Message is encrypted
+                        print(f"\n{prefix}[ENCRYPTED] Message received.")
                         
-                            # If we're in encryption mode, try using the preset password first
-                            #print("\rEnter password to decrypt (or type 'skip' to ignore): ", end="")  # Overwrite
-                            password = input("\rEnter password to decrypt (or type 'skip' to ignore): ", end="")
+                        while True:
+                            password = input("Enter password to decrypt (or type 'skip' to ignore): ")
                             if password.lower() == "skip":
                                 print("Skipping decryption.")
                                 break
@@ -101,21 +98,6 @@ def receive_messages(sock):
                                 break  # Exit the loop once decrypted successfully
                             except Exception as e:
                                 print("Wrong password. Try again.")
-                        
-                        # Prompt for password
-                        #password = input("Enter password to decrypt: ")
-                        
-                        # try:
-                        #     enc_data = base64.b64decode(content[4:])
-                        #     salt = b'salt_'  # Using same salt as server
-                        #     key = generate_key(password, salt)
-                        #     decrypted = decrypt_message(enc_data, key)
-                        #     if decrypted:
-                        #         print(f"[Encrypted Chat] {prefix}{decrypted}")
-                        #     else:
-                        #         print(f"{prefix}[ENCRYPTED] Failed to decrypt - wrong password?")
-                        # except Exception as e:
-                        #     print(f"{prefix}[ENCRYPTED] Failed to decrypt: {str(e)}")
                     else:
                         # Message is not encrypted
                         print(message, end='')
