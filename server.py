@@ -7,6 +7,9 @@ from cryptography.fernet import Fernet
 import base64
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+import struct
+import hashlib
+import os
 
 HOST = '0.0.0.0'  # Listen on all available interfaces
 
@@ -26,6 +29,13 @@ Available Commands:
 Encryption Commands:
 @encrypt on - Starts an encryption session
 @encrypt off - Stops the encryption session
+
+File Transfer Commands:
+@sendfile <filename> <recipient> - Send a file to a specific user.
+@sendfile-group <filename> <group_name> - Send a file to all members of a group.
+@acceptfile - Accept a pending file transfer.
+@rejectfile - Reject a pending file transfer.
+@viewfile <filename> - View contents of a text file (if it exists in your folder or downloads).
 """
 
 def generate_key(password):
@@ -169,6 +179,75 @@ class GroupManager:
         return True, "Message sent"
 
 class Client:
+    # File transfer constants
+    CHUNK_SIZE = 8192  # 8KB chunks for file transfer
+    HEADER_FORMAT = "!Q"  # Format for file size (unsigned long long)
+    HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+    
+    def calculate_md5(self, filepath):
+        """Calculate MD5 hash of a file"""
+        md5_hash = hashlib.md5()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(self.CHUNK_SIZE), b""):
+                md5_hash.update(chunk)
+        return md5_hash.hexdigest()
+    
+    def send_file(self, filepath):
+        """Send a file over the socket connection"""
+        try:
+            # Get file size
+            filesize = os.path.getsize(filepath)
+            
+            # Send filesize header
+            self.socket.sendall(struct.pack(self.HEADER_FORMAT, filesize))
+            
+            # Calculate and send MD5 hash
+            md5_hash = self.calculate_md5(filepath)
+            self.socket.sendall(md5_hash.encode())
+            
+            # Send file content
+            with open(filepath, "rb") as f:
+                while True:
+                    chunk = f.read(self.CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    self.socket.sendall(chunk)
+            
+            return True, md5_hash
+        except Exception as e:
+            return False, str(e)
+    
+    def receive_file(self, save_path):
+        """Receive a file over the socket connection"""
+        try:
+            # Receive filesize header
+            header = self.socket.recv(self.HEADER_SIZE)
+            filesize = struct.unpack(self.HEADER_FORMAT, header)[0]
+            
+            # Receive MD5 hash
+            md5_hash = self.socket.recv(32).decode()  # MD5 hash is 32 characters
+            
+            # Receive and save file
+            received_size = 0
+            with open(save_path, "wb") as f:
+                while received_size < filesize:
+                    chunk_size = min(self.CHUNK_SIZE, filesize - received_size)
+                    chunk = self.socket.recv(chunk_size)
+                    if not chunk:
+                        raise Exception("Connection closed before file transfer completed")
+                    f.write(chunk)
+                    received_size += len(chunk)
+            
+            # Verify MD5 hash
+            received_md5 = self.calculate_md5(save_path)
+            if received_md5 != md5_hash:
+                os.remove(save_path)  # Delete corrupted file
+                raise Exception("File transfer failed: MD5 verification failed")
+            
+            return True, md5_hash
+        except Exception as e:
+            return False, str(e)
+        
     def __init__(self, socket, address):
         self.socket = socket
         self.address = address
@@ -424,6 +503,77 @@ class ClientHandler:
         else:
             self.client.send_message("Unknown @group subcommand.\n")
 
+    def handle_file_transfer(self, tokens):
+        """Handle file transfer commands"""
+        if len(tokens) < 3:
+            self.client.send_message("Usage: @sendfile <filename> <recipient> or @sendfile-group <filename> <group_name>\n")
+            return
+        
+        command = tokens[0].lower()
+        filename = tokens[1]
+        target = tokens[2]
+        
+        if command == '@sendfile':
+            # Single recipient file transfer
+            if target not in self.client_manager.clients:
+                self.client.send_message(f"User '{target}' not found.\n")
+                return
+                
+            recipient = self.client_manager.clients[target]
+            recipient.send_message(f"[FILE] {self.client.username} is sending you file '{filename}'. Type @acceptfile to accept or @rejectfile to reject.\n")
+            # Store pending transfer info
+            recipient.pending_file_transfer = {
+                'filename': filename,
+                'sender': self.client.username,
+                'sender_client': self.client
+            }
+            
+        elif command == '@sendfile-group':
+            # Group file transfer
+            group = self.client_manager.group_manager.groups.get(target)
+            if not group:
+                self.client.send_message(f"Group '{target}' does not exist.\n")
+                return
+                
+            if not group.is_member(self.client.username):
+                self.client.send_message(f"You are not a member of group '{target}'.\n")
+                return
+                
+            for member in group.members:
+                if member != self.client.username and member in self.client_manager.clients:
+                    recipient = self.client_manager.clients[member]
+                    recipient.send_message(f"[FILE] {self.client.username} is sending file '{filename}' to group '{target}'. Type @acceptfile to accept or @rejectfile to reject.\n")
+                    # Store pending transfer info
+                    recipient.pending_file_transfer = {
+                        'filename': filename,
+                        'sender': self.client.username,
+                        'sender_client': self.client,
+                        'group': target
+                    }
+    
+    def handle_file_response(self, command):
+        """Handle file transfer response (accept/reject)"""
+        if not hasattr(self.client, 'pending_file_transfer'):
+            self.client.send_message("No pending file transfers.\n")
+            return
+            
+        transfer_info = self.client.pending_file_transfer
+        sender_client = transfer_info['sender_client']
+        filename = transfer_info['filename']
+        
+        if command == '@acceptfile':
+            sender_client.send_message(f"{self.client.username} accepted the file transfer for '{filename}'. Starting transfer...\n")
+            self.client.send_message(f"Accepting file transfer for '{filename}'...\n")
+            
+            # Signal start of transfer
+            self.client.send_message("FILE_TRANSFER_START\n")
+            
+        elif command == '@rejectfile':
+            sender_client.send_message(f"{self.client.username} rejected the file transfer for '{filename}'.\n")
+            self.client.send_message(f"Rejected file transfer for '{filename}'.\n")
+            
+        delattr(self.client, 'pending_file_transfer')
+
     def handle_message(self, message):
         """Process incoming messages and commands"""
         tokens = message.split()
@@ -442,6 +592,15 @@ class ClientHandler:
         # Handle group commands
         if tokens[0].lower().startswith('@group'):
             self.handle_group_command(tokens)
+            return True
+        
+        # Handle file transfer commands
+        elif tokens[0].lower() in ['@sendfile', '@sendfile-group']:
+            self.handle_file_transfer(tokens)
+            return True
+        # Handle file transfer responses
+        elif tokens[0].lower() in ['@acceptfile', '@rejectfile']:
+            self.handle_file_response(tokens[0].lower())
             return True
             
         # Handle private messages

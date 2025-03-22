@@ -7,6 +7,9 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
+import struct
+import hashlib
+import os
 
 # Encryption Utilities
 class EncryptionUtils:
@@ -40,6 +43,161 @@ class EncryptionUtils:
             raise Exception(f"Decryption failed: {str(e)}")
 
 class Client:
+    # File transfer constants
+    CHUNK_SIZE = 8192  # 8KB chunks for file transfer
+    HEADER_FORMAT = "!Q"  # Format for file size (unsigned long long)
+    HEADER_SIZE = struct.calcsize(HEADER_FORMAT)
+    
+    def calculate_md5(self, filepath):
+        """Calculate MD5 hash of a file"""
+        md5_hash = hashlib.md5()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(self.CHUNK_SIZE), b""):
+                md5_hash.update(chunk)
+        return md5_hash.hexdigest()
+    
+    def handle_file_transfer_command(self, tokens):
+        """Handle file transfer commands"""
+        if len(tokens) < 3:
+            print("Usage: @sendfile <filename> <recipient> or @sendfile-group <filename> <group_name>")
+            return
+        
+        filename = tokens[1]
+        if not os.path.exists(filename):
+            print(f"Error: File '{filename}' not found.")
+            return
+        
+        # Show preview for text files
+        try:
+            with open(filename, 'r', encoding='utf-8') as f:
+                preview = f.read(1024)  # Read first 1KB
+                print(f"\nPreview of {filename}:")
+                print("=" * 30)
+                print(preview)
+                if len(preview) == 1024:
+                    print("\n... (file continues)")
+                print("=" * 30)
+        except UnicodeDecodeError:
+            print(f"Note: '{filename}' is a binary file and cannot be previewed.")
+        except Exception as e:
+            print(f"Note: Cannot preview file: {e}")
+            
+        # Send the command to server
+        self.sock.sendall(' '.join(tokens).encode('utf-8'))
+        print(f"File transfer request sent for '{filename}'")
+        
+        # Store the filename for later use
+        self.pending_send_file = filename
+    
+    def send_file(self, filepath):
+        """Send a file over the socket connection"""
+        try:
+            # Get file size
+            filesize = os.path.getsize(filepath)
+            
+            # Send filesize header
+            self.sock.sendall(struct.pack(self.HEADER_FORMAT, filesize))
+            
+            # Calculate and send MD5 hash
+            md5_hash = self.calculate_md5(filepath)
+            self.sock.sendall(md5_hash.encode())
+            
+            # Send file content
+            sent_size = 0
+            with open(filepath, "rb") as f:
+                while True:
+                    chunk = f.read(self.CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    self.sock.sendall(chunk)
+                    sent_size += len(chunk)
+                    # Print progress
+                    progress = (sent_size / filesize) * 100
+                    print(f"\rSending: {progress:.1f}%", end='', flush=True)
+            print("\nFile sent successfully!")
+            return True
+        except Exception as e:
+            print(f"\nError sending file: {e}")
+            return False
+    
+    def receive_file(self, filename):
+        """Receive a file over the socket connection"""
+        try:
+            # Create downloads directory if it doesn't exist
+            os.makedirs('downloads', exist_ok=True)
+            save_path = os.path.join('downloads', filename)
+            
+            # Receive filesize header
+            header = self.sock.recv(self.HEADER_SIZE)
+            filesize = struct.unpack(self.HEADER_FORMAT, header)[0]
+            
+            # Receive MD5 hash
+            md5_hash = self.sock.recv(32).decode()  # MD5 hash is 32 characters
+            
+            # Receive and save file
+            received_size = 0
+            with open(save_path, "wb") as f:
+                while received_size < filesize:
+                    chunk_size = min(self.CHUNK_SIZE, filesize - received_size)
+                    chunk = self.sock.recv(chunk_size)
+                    if not chunk:
+                        raise Exception("Connection closed before file transfer completed")
+                    f.write(chunk)
+                    received_size += len(chunk)
+                    # Print progress
+                    progress = (received_size / filesize) * 100
+                    print(f"\rReceiving: {progress:.1f}%", end='', flush=True)
+            
+            # Verify MD5 hash
+            received_md5 = self.calculate_md5(save_path)
+            if received_md5 != md5_hash:
+                os.remove(save_path)  # Delete corrupted file
+                raise Exception("File transfer failed: MD5 verification failed")
+            
+            print(f"\nFile received successfully and saved as '{save_path}'")
+            return True
+        except Exception as e:
+            print(f"\nError receiving file: {e}")
+            return False
+        
+    def view_file_contents(self, filename):
+        """View contents of a file"""
+        try:
+            # Check in current directory first
+            if os.path.exists(filename):
+                filepath = filename
+            else:
+                # Check in downloads directory
+                downloads_path = os.path.join('downloads', filename)
+                if os.path.exists(downloads_path):
+                    filepath = downloads_path
+                else:
+                    print(f"Error: File '{filename}' not found in current directory or downloads folder.")
+                    return False
+
+            # Check file size
+            file_size = os.path.getsize(filepath)
+            if file_size > 1024 * 1024:  # If file is larger than 1MB
+                print(f"Warning: File '{filename}' is large ({file_size/1024/1024:.1f}MB). ")
+                response = input("Do you want to continue? (y/n): ")
+                if response.lower() != 'y':
+                    return False
+
+            try:
+                # Try to read as text file
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    print(f"\n=== Contents of {filename} ===")
+                    print(f.read())
+                    print("=" * 30)
+                return True
+            except UnicodeDecodeError:
+                print(f"Error: '{filename}' appears to be a binary file and cannot be displayed as text.")
+                return False
+
+        except Exception as e:
+            print(f"Error viewing file: {e}")
+            return False
+        
     def __init__(self, server_host, port):
         self.server_host = server_host
         self.port = port
@@ -101,7 +259,20 @@ class Client:
     def process_message(self, message):
         """Process incoming messages and handle encryption if necessary."""
         try:
-            if message.startswith('['):
+            # Handle file transfer start signal
+            if message.strip() == "FILE_TRANSFER_START":
+                if hasattr(self, 'pending_send_file'):
+                    filename = self.pending_send_file
+                    print(f"Starting file transfer for '{filename}'...")
+                    self.send_file(filename)
+                    delattr(self, 'pending_send_file')
+                return
+                
+            # Handle regular messages
+            if message.startswith('[FILE]'):
+                print(message, end='')
+
+            elif message.startswith('['):
                 # Support formats like: [group][user] message
                 prefix_end = message.find("] ")
                 if prefix_end == -1:
@@ -304,6 +475,24 @@ class Client:
             # Handle private messages
             if command.startswith('@'):
                 self.handle_private_message(tokens)
+                return True
+            
+            # Handle file transfer commands
+            if command in ['@sendfile', '@sendfile-group']:
+                self.handle_file_transfer_command(tokens)
+                return True
+            
+            # Handle file transfer responses
+            if command in ['@acceptfile', '@rejectfile']:
+                self.sock.sendall(user_input.encode('utf-8'))
+                return True
+            
+            # Handle view file command
+            if command == '@viewfile':
+                if len(tokens) < 2:
+                    print("Usage: @viewfile <filename>")
+                    return True
+                self.view_file_contents(tokens[1])
                 return True
 
             # Handle regular messages with encryption if enabled
