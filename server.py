@@ -24,8 +24,12 @@ Available Commands:
 @help - Show this help message.
 
 Encryption Commands:
-@encrypt on - Starts an encryption session
-@encrypt off - Stops the encryption session
+@encrypt on - Starts an encryption session.
+@encrypt off - Stops the encryption session.
+
+File Transfer Commands:
+@sendfile <username> <filepath> - Send a file to a user. # @sendfile alice C:\Documents\example.txt
+@setdownloads <directory> - Change download directory. # @sendfile alice ~/Documents/report.pdf
 """
 
 def generate_key(password):
@@ -424,10 +428,38 @@ class ClientHandler:
         else:
             self.client.send_message("Unknown @group subcommand.\n")
 
+    def handle_file_transfer(self, tokens):
+        """Handle file transfer between clients"""
+        if len(tokens) < 3:
+            self.client.send_message("Invalid file transfer command.\n")
+            return
+
+        recipient = tokens[1]
+        filename = ' '.join(tokens[2:])  # Handle filenames with spaces
+
+        # Check if recipient exists and is online
+        if recipient not in self.client_manager.clients:
+            self.client.send_message(f"ERROR:User {recipient} not found or offline.\n")
+            return
+
+        # Notify recipient about incoming file
+        recipient_client = self.client_manager.clients[recipient]
+        recipient_client.send_message(f"[FILE] {self.client.username} wants to send you file: {filename}\n")
+
+        # Connect sender and recipient for direct file transfer
+        self.client.send_message("OK:Recipient notified. Starting file transfer...\n")
+
+        # The actual file transfer will be handled by the FileTransfer class in the clients
+
     def handle_message(self, message):
         """Process incoming messages and commands"""
         tokens = message.split()
         if not tokens:
+            return True
+
+        # Handle file transfer command
+        if tokens[0].lower() == '@sendfile':
+            self.handle_file_transfer(tokens)
             return True
 
         # Handle encryption commands

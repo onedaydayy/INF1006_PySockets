@@ -8,6 +8,132 @@ from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 from cryptography.hazmat.backends import default_backend
 
+# File Transfer Utilities
+class FileTransfer:
+    CHUNK_SIZE = 8192
+    TIMEOUT = 30  # seconds
+
+    @staticmethod
+    def format_size(size):
+        """Convert size to human readable format"""
+        for unit in ['B', 'KB', 'MB', 'GB']:
+            if size < 1024:
+                return f"{size:.2f}{unit}"
+            size /= 1024
+        return f"{size:.2f}TB"
+
+    @staticmethod
+    def show_progress(current, total):
+        """Display progress bar"""
+        percentage = (current * 100) // total
+        bar_length = 30
+        filled = int(bar_length * current / total)
+        bar = '=' * filled + '-' * (bar_length - filled)
+        print(f"\rProgress: [{bar}] {percentage}% ({FileTransfer.format_size(current)}/{FileTransfer.format_size(total)})", end='')
+        if current == total:
+            print()  # New line when complete
+
+    @staticmethod
+    def send_file(sock, filepath):
+        """Send a file over the socket"""
+        try:
+            # Check if file exists
+            if not os.path.exists(filepath):
+                return False, "File not found"
+            
+            # Get file size
+            filesize = os.path.getsize(filepath)
+            print(f"\nSending file: {os.path.basename(filepath)} ({FileTransfer.format_size(filesize)})")
+            
+            # Send file info
+            filename = os.path.basename(filepath)
+            file_info = f"{filename}:{filesize}"
+            sock.sendall(file_info.encode('utf-8'))
+            
+            # Wait for ready signal
+            response = sock.recv(1024).decode('utf-8')
+            if response != "READY":
+                return False, "Receiver not ready"
+            
+            # Send file data in chunks
+            with open(filepath, 'rb') as f:
+                bytes_sent = 0
+                while bytes_sent < filesize:
+                    chunk = f.read(FileTransfer.CHUNK_SIZE)
+                    if not chunk:
+                        break
+                    sock.sendall(chunk)
+                    bytes_sent += len(chunk)
+                    FileTransfer.show_progress(bytes_sent, filesize)
+            
+            # Wait for confirmation
+            response = sock.recv(1024).decode('utf-8')
+            if response == "SUCCESS":
+                return True, "File sent successfully"
+            return False, "File transfer failed"
+            
+        except Exception as e:
+            return False, f"Error sending file: {str(e)}"
+
+    @staticmethod
+    def receive_file(sock, save_dir="."):
+        """Receive a file over the socket"""
+        try:
+            # Get file info
+            file_info = sock.recv(1024).decode('utf-8')
+            filename, filesize = file_info.split(':')
+            filesize = int(filesize)
+            
+            # Ask user for confirmation
+            print(f"\nIncoming file: {filename} ({FileTransfer.format_size(filesize)})")
+            response = input("Accept file? (yes/no): ").lower()
+            
+            if response != 'yes':
+                sock.sendall("REJECTED".encode('utf-8'))
+                return False, "File rejected"
+            
+            # Send ready signal
+            sock.sendall("READY".encode('utf-8'))
+            
+            # Prepare file path
+            filepath = os.path.join(save_dir, filename)
+            
+            # Create downloads directory if it doesn't exist
+            os.makedirs(save_dir, exist_ok=True)
+            
+            # Check if file already exists
+            if os.path.exists(filepath):
+                base, ext = os.path.splitext(filename)
+                counter = 1
+                while os.path.exists(filepath):
+                    new_name = f"{base}_{counter}{ext}"
+                    filepath = os.path.join(save_dir, new_name)
+                    counter += 1
+            
+            print(f"\nReceiving file: {os.path.basename(filepath)}")
+            
+            # Receive file data
+            with open(filepath, 'wb') as f:
+                bytes_received = 0
+                while bytes_received < filesize:
+                    chunk = sock.recv(min(FileTransfer.CHUNK_SIZE, filesize - bytes_received))
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    bytes_received += len(chunk)
+                    FileTransfer.show_progress(bytes_received, filesize)
+            
+            # Verify complete transfer
+            if bytes_received == filesize:
+                sock.sendall("SUCCESS".encode('utf-8'))
+                return True, f"File saved as {filepath}"
+            else:
+                sock.sendall("FAILED".encode('utf-8'))
+                return False, "Incomplete transfer"
+                
+        except Exception as e:
+            return False, f"Error receiving file: {str(e)}"
+
 # Encryption Utilities
 class EncryptionUtils:
     @staticmethod
@@ -47,6 +173,21 @@ class Client:
         self.encryption_enabled = False
         self.encryption_key = None
         self.encryption_password = None
+        self.file_transfer = FileTransfer()
+        self.downloads_dir = os.path.join(os.path.expanduser("~"), "Downloads", "ChatFiles")
+        os.makedirs(self.downloads_dir, exist_ok=True)
+
+    def set_downloads_directory(self, directory):
+        """Set custom downloads directory"""
+        try:
+            directory = os.path.expanduser(directory)
+            os.makedirs(directory, exist_ok=True)
+            self.downloads_dir = directory
+            print(f"Downloads directory set to: {directory}")
+            return True
+        except Exception as e:
+            print(f"Error setting downloads directory: {e}")
+            return False
 
     def connect(self):
         """Establish connection to the server and perform username negotiation."""
@@ -101,6 +242,11 @@ class Client:
     def process_message(self, message):
         """Process incoming messages and handle encryption if necessary."""
         try:
+            # Handle file transfer notifications
+            if message.startswith('[FILE]'):
+                # File transfer will be handled by FileTransfer class
+                return
+                
             if message.startswith('['):
                 # Support formats like: [group][user] message
                 prefix_end = message.find("] ")
@@ -267,6 +413,59 @@ class Client:
         except Exception as e:
             print(f"Error handling group command: {e}")
 
+    def handle_file_command(self, tokens):
+        """Handle file transfer commands"""
+        if len(tokens) < 2:
+            print("Available file commands:")
+            print("  @sendfile <username> <filepath> - Send a file to a user")
+            print("  @setdownloads <directory> - Set downloads directory")
+            return True
+
+        if tokens[1].lower() == 'setdownloads':
+            if len(tokens) < 3:
+                print(f"Current downloads directory: {self.downloads_dir}")
+                print("Usage: @setdownloads <directory>")
+                return True
+            directory = ' '.join(tokens[2:])
+            self.set_downloads_directory(directory)
+            return True
+
+        if len(tokens) < 3:
+            print("Usage: @sendfile <username> <filepath>")
+            return True
+
+        recipient = tokens[1]
+        filepath = ' '.join(tokens[2:])  # Handle filenames with spaces
+        
+        # Expand user path (e.g., ~/Documents/file.txt)
+        filepath = os.path.expanduser(filepath)
+        
+        # Check file size before sending
+        try:
+            filesize = os.path.getsize(filepath)
+            if filesize > 100 * 1024 * 1024:  # 100MB limit
+                print("Warning: Large file detected. Are you sure you want to send it? (yes/no)")
+                if input().lower() != 'yes':
+                    print("File transfer cancelled.")
+                    return True
+        except Exception as e:
+            print(f"Error checking file: {e}")
+            return True
+        
+        # Send file transfer request
+        self.sock.sendall(f"@sendfile {recipient} {os.path.basename(filepath)}".encode('utf-8'))
+        
+        # Wait for server confirmation
+        response = self.sock.recv(1024).decode('utf-8')
+        if response.startswith("ERROR:"):
+            print(response[6:])  # Print error message
+            return True
+            
+        # Start file transfer
+        success, msg = FileTransfer.send_file(self.sock, filepath)
+        print(msg)
+        return True
+
     def handle_input(self, user_input):
         """Process user input and handle different types of commands."""
         try:
@@ -275,6 +474,10 @@ class Client:
                 return True
 
             command = tokens[0].lower()
+
+            # Handle file transfer command
+            if command == '@sendfile':
+                return self.handle_file_command(tokens)
 
             # Handle encryption commands
             if command == '@encrypt':
