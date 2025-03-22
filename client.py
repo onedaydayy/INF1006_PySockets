@@ -76,35 +76,51 @@ class Client:
 
     def process_message(self, message):
         """Process incoming messages and handle encryption if necessary."""
-        if message.startswith('['):
-            idx = message.find("] ")
-            if idx != -1:
-                prefix = message[:idx+2]  # e.g., "[Alice] " or "[PM from Bob] "
-                content = message[idx+2:].strip()
-                
-                if content.startswith('ENC:'):
-                    print(f"\n{prefix}[ENCRYPTED] Message received.")
-                    while True:
-                        password = input("Enter password to decrypt (or type 'skip' to ignore): ")
-                        if password.lower() == "skip":
-                            print("Skipping decryption.")
-                            break
-
-                        try:
-                            enc_data = base64.b64decode(content[4:])
-                            salt = b'salt_'
-                            key = EncryptionUtils.generate_key(password, salt)
-                            decrypted = EncryptionUtils.decrypt_message(enc_data, key)
-                            print(f"[Decrypted Message] {prefix}{decrypted}")
-                            break
-                        except Exception:
-                            print("Wrong password. Try again.")
+        try:
+            if message.startswith('['):
+                idx = message.find("] ")
+                if idx != -1:
+                    prefix = message[:idx+2]  # e.g., "[Alice] " or "[PM from Bob] "
+                    content = message[idx+2:].strip()
+                    
+                    if content.startswith('ENC:'):
+                        print(f"\n{prefix}[ENCRYPTED] Message received.")
+                        if self.encryption_enabled and self.encryption_key:
+                            try:
+                                enc_data = base64.b64decode(content[4:])
+                                decrypted = EncryptionUtils.decrypt_message(enc_data, self.encryption_key)
+                                print(f"[Decrypted Message] {prefix}{decrypted}")
+                            except Exception:
+                                print("Failed to decrypt message with current key.")
+                                self.prompt_for_decryption(prefix, content)
+                        else:
+                            self.prompt_for_decryption(prefix, content)
+                    else:
+                        print(message, end='')
                 else:
                     print(message, end='')
             else:
                 print(message, end='')
-        else:
-            print(message, end='')
+        except Exception as e:
+            print(f"\nError processing message: {e}")
+
+    def prompt_for_decryption(self, prefix, content):
+        """Prompt user for password to decrypt a message."""
+        while True:
+            password = input("Enter password to decrypt (or type 'skip' to ignore): ")
+            if password.lower() == "skip":
+                print("Skipping decryption.")
+                break
+
+            try:
+                enc_data = base64.b64decode(content[4:])
+                salt = b'salt_'
+                key = EncryptionUtils.generate_key(password, salt)
+                decrypted = EncryptionUtils.decrypt_message(enc_data, key)
+                print(f"[Decrypted Message] {prefix}{decrypted}")
+                break
+            except Exception:
+                print("Wrong password. Try again.")
 
     def handle_encryption_command(self, tokens):
         """Handle encryption-related commands."""
@@ -113,11 +129,39 @@ class Client:
                 print("Encryption mode ON")
                 self.encryption_password = input("Enter encryption password: ")
                 if self.encryption_password:
-                    salt = b'salt_'
-                    self.encryption_key = EncryptionUtils.generate_key(self.encryption_password, salt)
-                    self.encryption_enabled = True
-                    print("Encryption enabled. All messages will be encrypted.")
-                    return True
+                    try:
+                        salt = b'salt_'
+                        self.encryption_key = EncryptionUtils.generate_key(self.encryption_password, salt)
+                        self.encryption_enabled = True
+                        # Send salt to server for other clients
+                        self.sock.sendall(f"@salt {base64.b64encode(salt).decode('utf-8')}".encode('utf-8'))
+                        print("Encryption enabled. All messages will be encrypted.")
+                        
+                        # Add prompt for first encrypted message
+                        while True:
+                            message = input("Enter your encrypted message (or type '@encrypt off' to disable encryption): ")
+                            if message.lower() == '@encrypt off':
+                                self.encryption_enabled = False
+                                self.encryption_key = None
+                                self.encryption_password = None
+                                print("Encryption disabled. Messages will be sent in plaintext.")
+                                break
+                            elif message:
+                                try:
+                                    encrypted = EncryptionUtils.encrypt_message(message, self.encryption_key)
+                                    formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
+                                    self.sock.sendall(formatted_msg.encode('utf-8'))
+                                    print("[Encrypted] Message sent.")
+                                    break
+                                except Exception as e:
+                                    print(f"Encryption failed: {e}")
+                        return True
+                    except Exception as e:
+                        print(f"Failed to enable encryption: {e}")
+                        self.encryption_enabled = False
+                        self.encryption_key = None
+                        self.encryption_password = None
+                        return False
                 else:
                     print("No password provided. Encryption not enabled.")
                     return False
@@ -146,88 +190,102 @@ class Client:
 
     def handle_private_message(self, tokens):
         """Handle private messages with optional encryption."""
-        parts = ' '.join(tokens).split(' ', 1)
-        recipient = parts[0][1:]
-        
-        if len(parts) > 1 and self.encryption_enabled:
-            message = parts[1]
-            try:
-                encrypted = EncryptionUtils.encrypt_message(message, self.encryption_key)
-                formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
-                self.sock.sendall(f"@{recipient} {formatted_msg}".encode('utf-8'))
-                print("Private message encrypted and sent.")
-            except Exception as e:
-                print(f"Encryption failed: {e}")
-        else:
-            self.sock.sendall(' '.join(tokens).encode('utf-8'))
+        try:
+            parts = ' '.join(tokens).split(' ', 1)
+            recipient = parts[0][1:]
+            
+            if len(parts) > 1 and self.encryption_enabled and self.encryption_key:
+                message = parts[1]
+                try:
+                    encrypted = EncryptionUtils.encrypt_message(message, self.encryption_key)
+                    formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
+                    self.sock.sendall(f"@{recipient} {formatted_msg}".encode('utf-8'))
+                    print(f"Private message sent to {recipient}.")
+                except Exception as e:
+                    print(f"Encryption failed: {e}")
+            else:
+                self.sock.sendall(' '.join(tokens).encode('utf-8'))
+                if len(parts) > 1:
+                    print(f"Private message sent to {recipient}.")
+        except Exception as e:
+            print(f"Error sending private message: {e}")
 
     def handle_group_command(self, tokens):
         """Handle group-related commands with optional encryption."""
-        if len(tokens) < 2:
-            print("Invalid group command.")
-            return
-        
-        if len(tokens) >= 4 and tokens[1].lower() == 'send' and self.encryption_enabled:
-            groupname = tokens[2]
-            message_body = ' '.join(tokens[3:])
-            try:
-                encrypted = EncryptionUtils.encrypt_message(message_body, self.encryption_key)
-                formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
-                self.sock.sendall(f"@group send {groupname} {formatted_msg}".encode('utf-8'))
-                print("Encrypted group message sent.")
-            except Exception as e:
-                print(f"Encryption failed: {e}")
-        else:
-            self.sock.sendall(' '.join(tokens).encode('utf-8'))
+        try:
+            if len(tokens) < 2:
+                print("Invalid group command.")
+                return
+            
+            if len(tokens) >= 4 and tokens[1].lower() == 'send' and self.encryption_enabled and self.encryption_key:
+                groupname = tokens[2]
+                message_body = ' '.join(tokens[3:])
+                try:
+                    encrypted = EncryptionUtils.encrypt_message(message_body, self.encryption_key)
+                    formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
+                    self.sock.sendall(f"@group send {groupname} {formatted_msg}".encode('utf-8'))
+                    print(f"Encrypted message sent to group {groupname}.")
+                except Exception as e:
+                    print(f"Encryption failed: {e}")
+            else:
+                self.sock.sendall(' '.join(tokens).encode('utf-8'))
+        except Exception as e:
+            print(f"Error handling group command: {e}")
 
     def handle_input(self, user_input):
         """Process user input and handle different types of commands."""
-        tokens = user_input.split()
-        if not tokens:
-            return
+        try:
+            tokens = user_input.split()
+            if not tokens:
+                return True
 
-        command = tokens[0].lower()
+            command = tokens[0].lower()
 
-        # Handle encryption commands
-        if command == '@encrypt':
-            if self.handle_encryption_command(tokens):
-                return
+            # Handle encryption commands
+            if command == '@encrypt':
+                if self.handle_encryption_command(tokens):
+                    return True
+                return True
 
-        # Handle salt command
-        if command.startswith('@salt'):
-            if self.handle_salt_command(tokens):
-                return
+            # Handle salt command
+            if command.startswith('@salt'):
+                if self.handle_salt_command(tokens):
+                    return True
+                return True
 
-        # Handle standard commands
-        if command in ['@names', '@history', '@help', '@quit']:
-            self.sock.sendall(user_input.encode('utf-8'))
-            if command == '@quit':
-                print("You have quit the chat.")
-                return False
+            # Handle standard commands
+            if command in ['@names', '@history', '@help', '@quit']:
+                self.sock.sendall(user_input.encode('utf-8'))
+                if command == '@quit':
+                    print("You have quit the chat.")
+                    return False
+                return True
+
+            # Handle group commands
+            if command.startswith('@group'):
+                self.handle_group_command(tokens)
+                return True
+
+            # Handle private messages
+            if command.startswith('@'):
+                self.handle_private_message(tokens)
+                return True
+
+            # Handle regular messages with encryption if enabled
+            if self.encryption_enabled and self.encryption_key:
+                try:
+                    encrypted = EncryptionUtils.encrypt_message(user_input, self.encryption_key)
+                    formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
+                    self.sock.sendall(formatted_msg.encode('utf-8'))
+                    print("Message sent (encrypted).")
+                except Exception as e:
+                    print(f"Encryption failed: {e}")
+            else:
+                self.sock.sendall(user_input.encode('utf-8'))
             return True
-
-        # Handle group commands
-        if command.startswith('@group'):
-            self.handle_group_command(tokens)
+        except Exception as e:
+            print(f"Error handling input: {e}")
             return True
-
-        # Handle private messages
-        if command.startswith('@'):
-            self.handle_private_message(tokens)
-            return True
-
-        # Handle regular messages with encryption if enabled
-        if self.encryption_enabled:
-            try:
-                encrypted = EncryptionUtils.encrypt_message(user_input, self.encryption_key)
-                formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
-                self.sock.sendall(formatted_msg.encode('utf-8'))
-                print("Message encrypted and sent.")
-            except Exception as e:
-                print(f"Encryption failed: {e}")
-        else:
-            self.sock.sendall(user_input.encode('utf-8'))
-        return True
 
     def run(self):
         """Main client loop for handling user input."""
