@@ -310,12 +310,12 @@ def client_thread(client_sock, addr):
                     client_sock.sendall(b"Decryption failed. Invalid message format.\n")
                     
             # Handle regular commands
-            elif tokens[0] == '@quit':
+            elif tokens[0].lower() == '@quit':
                 broadcast(f"{username} has left the chat.\n", username)
                 break
-            elif tokens[0] == '@names':
+            elif tokens[0].lower() == '@names':
                 list_users(username)
-            elif tokens[0] == '@history':
+            elif tokens[0].lower() == '@history':
                 # Retrieve and send chat history
                 history = chat_history[username]
                 if history:
@@ -323,12 +323,12 @@ def client_thread(client_sock, addr):
                         client_sock.sendall(msg.encode('utf-8'))
                 else:
                     client_sock.sendall(b"No chat history found.\n")
-            elif tokens[0] == '@help':
+            elif tokens[0].lower() == '@help':
                 # Send the help message to the client
                 client_sock.sendall(COMMANDS_HELP.encode('utf-8'))
-            elif tokens[0].startswith('@group'):
+            elif tokens[0].lower().startswith('@group'):
                 handle_group_command(username, tokens)
-            elif tokens[0].startswith('@'):
+            elif tokens[0].lower().startswith('@'):
                 # Handle private message or unknown command
                 recipient = tokens[0][1:]
                 pm_body = ' '.join(tokens[1:]) if len(tokens) > 1 else ''
