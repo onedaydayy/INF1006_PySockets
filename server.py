@@ -29,8 +29,8 @@ Available Commands:
 @help - Show this help message.
 
 Encryption Commands:
-@encrypt on - Enable the chat encryption
-@encrypt off - Disable the chat's encryption 
+@encrypt on - Starts an encryption session
+@encrypt off - Stops the encryption session
 """
 
 def generate_key(password):
