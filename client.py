@@ -88,7 +88,7 @@ class Client:
             try:
                 data = self.sock.recv(1024)
                 if not data:
-                    print("\nDisconnected from server")
+                    print("\nServer closed connection.")
                     break
                 message = data.decode('utf-8')
                 self.process_message(message)

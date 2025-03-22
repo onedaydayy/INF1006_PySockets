@@ -354,27 +354,47 @@ class ClientHandler:
             success, msg = self.client_manager.group_manager.create_group(group_name, self.client.username)
             if success:
                 for member in members:
-                    success_add, msg_add = self.client_manager.group_manager.add_member(group_name, member)
-                    if success_add:
-                        # Notify the newly added member.  THIS IS THE KEY CHANGE.
-                        self.client_manager.send_message(member, f"You have been added to group '{group_name}'.\n")
+                    if member in self.client_manager.clients:  # Only add existing users
+                        success_add, msg_add = self.client_manager.group_manager.add_member(group_name, member)
+                        if success_add:
+                            # Notify the member about being added to the group
+                            self.client_manager.send_message(member, f"You have been added to group '{group_name}'.\n")
+                        else:
+                            self.client.send_message(f"Failed to add {member}: {msg_add}\n")
                     else:
-                        self.client.send_message(msg_add) #notify the creator of the group
+                        self.client.send_message(f"User '{member}' not found.\n")
 
+                # Send group creation confirmation to creator
                 self.client.send_message(f"Group '{group_name}' created with members: {', '.join(members)}\n")
             else:
                 self.client.send_message(f"{msg}\n")
 
         elif subcommand == 'send':
+            if len(tokens) < 4:
+                self.client.send_message("No message provided.\n")
+                return
+                
             message_body = ' '.join(tokens[3:])
-            success, msg = self.client_manager.group_manager.send_message(
-                group_name, 
-                self.client.username, 
-                message_body, 
-                self.client_manager
-            )
-            if not success:
-                self.client.send_message(f"{msg}\n")
+            group = self.client_manager.group_manager.groups.get(group_name)
+            if not group:
+                self.client.send_message(f"Group '{group_name}' does not exist.\n")
+                return
+            if not group.is_member(self.client.username):
+                self.client.send_message(f"You are not a member of '{group_name}'.\n")
+                return
+
+            # Updated group message format: "[group_name][sender] <message>"
+            formatted_message = f"[{group_name}][{self.client.username}] {message_body}\n"
+
+            # Send to all group members
+            for member in group.members:
+                if member in self.client_manager.clients:
+                    try:
+                        self.client_manager.send_message(member, formatted_message)
+                    except:
+                        print(f"Failed to send group message to {member}")
+                    # Record in chat history
+                    self.client_manager.add_to_history(member, formatted_message)
 
         elif subcommand == 'leave':
             success, msg = self.client_manager.group_manager.remove_member(
