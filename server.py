@@ -366,7 +366,13 @@ class ClientHandler:
             success, msg = self.client_manager.group_manager.create_group(group_name, self.client.username)
             if success:
                 for member in members:
-                    self.client_manager.group_manager.add_member(group_name, member)
+                    success_add, msg_add = self.client_manager.group_manager.add_member(group_name, member)
+                    if success_add:
+                        # Notify the newly added member.  THIS IS THE KEY CHANGE.
+                        self.client_manager.send_message(member, f"You have been added to group '{group_name}'.\n")
+                    else:
+                        self.client.send_message(msg_add) #notify the creator of the group
+
                 self.client.send_message(f"Group '{group_name}' created with members: {', '.join(members)}\n")
             else:
                 self.client.send_message(f"{msg}\n")
