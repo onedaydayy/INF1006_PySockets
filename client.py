@@ -80,12 +80,14 @@ def receive_messages(sock):
                     
                     # Check if message is encrypted
                     if content.startswith('ENC:'):
-                        # Message is encrypted
-                        print(f"\n{prefix}[ENCRYPTED] Message received.")
-                        
-                        # If we're in encryption mode, try using the preset password first
                         while True:
-                            password = input("Enter password to decrypt (or type 'skip' to ignore): ")
+                            # Message is encrypted
+                            print(f"\n{prefix}[ENCRYPTED] Message received.")
+                            #sys.stdout.flush()  # Ensure the message is printed immediately
+                        
+                            # If we're in encryption mode, try using the preset password first
+                            #print("\rEnter password to decrypt (or type 'skip' to ignore): ", end="")  # Overwrite
+                            password = input("\rEnter password to decrypt (or type 'skip' to ignore): ", end="")
                             if password.lower() == "skip":
                                 print("Skipping decryption.")
                                 break

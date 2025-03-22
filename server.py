@@ -286,7 +286,7 @@ def client_thread(client_sock, addr):
                         # Handle as regular message
                     broadcast(f"[{username}] {formatted_msg}\n", username)
                 except:
-                    client_sock.sendall(b"Encryption failed. Please try again.\n")     
+                    client_sock.sendall(b"Encryption failed. Please try again.\n")
             elif tokens[0].lower() == '@decrypt':
                 if len(tokens) < 3:
                     client_sock.sendall(b"Usage: @decrypt password encrypted_message\n")
