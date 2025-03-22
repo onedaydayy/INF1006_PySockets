@@ -286,44 +286,31 @@ class ClientHandler:
             print(f"Error during initial username setup: {e}")
             return False
 
-    def handle_encryption_command(self, tokens):
-        """Handle @encrypt and @decrypt commands"""
-        if tokens[0].lower() == '@encrypt':
-            if len(tokens) < 3:
-                self.client.socket.sendall(b"Usage: @encrypt password message\n")
-            return
-
-            password = tokens[1]
-            msg_content = ' '.join(tokens[2:])
+    # def handle_encryption_command(self, tokens):
+    #     """Handle @encrypt and @decrypt commands"""
+        
+    #     # Decrypt message - command is nothing but a function to decrypt message.
+    #     if tokens[0].lower() == '@decrypt':
+    #         if len(tokens) < 3:
+    #             self.client.socket.sendall(b"Usage: @decrypt password encrypted_message\n")
+    #             return
             
-            try:
-                encrypted = encrypt_message(msg_content, password)
-                formatted_msg = format_encrypted_message(encrypted)
-                self.client_manager.broadcast(f"[{self.client.username}] {formatted_msg}\n", self.client.username)
-            except:
-                self.client.socket.sendall(b"Encryption failed. Please try again.\n")
-                
-        elif tokens[0].lower() == '@decrypt':
-            if len(tokens) < 3:
-                self.client.socket.sendall(b"Usage: @decrypt password encrypted_message\n")
-                return
+    #         password = tokens[1]
+    #         enc_message = ' '.join(tokens[2:])
             
-            password = tokens[1]
-            enc_message = ' '.join(tokens[2:])
+    #         is_encrypted, enc_data = parse_encrypted_message(enc_message)
+    #         if not is_encrypted:
+    #             self.client.socket.sendall(b"Not a valid encrypted message.\n")
+    #             return
             
-            is_encrypted, enc_data = parse_encrypted_message(enc_message)
-            if not is_encrypted:
-                self.client.socket.sendall(b"Not a valid encrypted message.\n")
-                return
-            
-            try:
-                decrypted = decrypt_message(enc_data, password)
-                if decrypted:
-                    self.client.socket.sendall(f"Decrypted message: {decrypted}\n".encode('utf-8'))
-                else:
-                    self.client.socket.sendall(b"Failed to decrypt. Wrong password?\n")
-            except:
-                self.client.socket.sendall(b"Decryption failed. Invalid message format.\n")
+    #         try:
+    #             decrypted = decrypt_message(enc_data, password)
+    #             if decrypted:
+    #                 self.client.socket.sendall(f"Decrypted message: {decrypted}\n".encode('utf-8'))
+    #             else:
+    #                 self.client.socket.sendall(b"Failed to decrypt. Wrong password?\n")
+    #         except:
+    #             self.client.socket.sendall(b"Decryption failed. Invalid message format.\n")
 
     def handle_standard_commands(self, tokens):
         """Handle standard commands like @quit, @names, @history, etc."""
@@ -423,9 +410,9 @@ class ClientHandler:
             return True
 
         # Handle encryption commands
-        if tokens[0].lower() in ['@encrypt', '@decrypt']:
-            self.handle_encryption_command(tokens)
-            return True
+        # if tokens[0].lower() in ['@encrypt', '@decrypt']:
+        #     self.handle_encryption_command(tokens)
+        #     return True
             
         # Handle standard commands
         if tokens[0].lower() in ['@quit', '@names', '@history', '@help']:
