@@ -1,0 +1,29 @@
+# PyCharm specific files
+.idea/
+
+# Python bytecode and cache
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Distribution / packaging
+build/
+dist/
+*.egg-info/
+*.whl
+*.tar.gz
+
+# Logs and temporary files (add if applicable to your project)
+logs/
+*.log
+*.tmp
+*.bak
+
+# OS Specific - macOS
+.DS_Store
