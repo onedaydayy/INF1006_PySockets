@@ -10,6 +10,7 @@ from cryptography.hazmat.backends import default_backend
 import struct
 import hashlib
 import os
+import re
 
 # Encryption Utilities
 class EncryptionUtils:
@@ -210,32 +211,34 @@ class Client:
         """Establish connection to the server and perform username negotiation."""
         try:
             self.sock.connect((self.server_host, self.port))
-            buffer = ""
-            while True:
-                data = self.sock.recv(1024).decode('utf-8')
-                buffer += data
 
-                # Handle server responses line-by-line
-                while "\n" in buffer or "Enter a unique username:" in buffer:
-                    if "Enter a unique username:" in buffer:
-                        print("Enter a unique username: ", end='')
-                        username = input().strip()
+            while True:
+                data = self.sock.recv(1024).decode('utf-8').strip()
+                if "Enter a unique username" in data:
+                    while True:
+                        username = input("Enter a unique username: ").strip()
+                        
+                        if not re.match("^[A-Za-z0-9_]+$", username):
+                            print("Invalid username. Use only letters, numbers, and underscores.")
+                            continue  # Retry username input
+
                         self.sock.sendall(username.encode('utf-8'))
-                        buffer = ""  # Clear buffer to await next response
-                        break
-                    elif "Username is already taken" in buffer or "Invalid username" in buffer:
-                        print(buffer.strip())
-                        buffer = ""  # Wait for next username prompt
-                        # Don't break here, allow loop to continue
-                    elif "Welcome to the chat" in buffer:
-                        print(buffer.strip())
-                        buffer = ""
-                        threading.Thread(target=self.receive_messages, daemon=True).start()
-                        print("You can now start typing your messages.")
-                        return
-                    else:
-                        print(buffer.strip())
-                        buffer = ""
+
+                        # Wait for server response about the username
+                        server_response = self.sock.recv(1024).decode('utf-8').strip()
+                        if "Username is already taken" in server_response:
+                            print(server_response)
+                            continue  # Retry username input
+                        elif "Welcome to the chat" in server_response:
+                            print(server_response)
+                            threading.Thread(target=self.receive_messages, daemon=True).start()
+                            print("You can now start typing your messages.")
+                            return
+                        else:
+                            print(server_response)
+                else:
+                    print(data)
+
         except Exception as e:
             print(f"Connection error: {e}")
             sys.exit(1)
