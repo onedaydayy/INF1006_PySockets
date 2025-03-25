@@ -10,6 +10,7 @@ from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import struct
 import hashlib
 import os
+import signal  # Import the signal module
 
 HOST = '0.0.0.0'  # Listen on all available interfaces
 
@@ -661,21 +662,16 @@ def main():
     server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     server_socket.bind((HOST, port))
     server_socket.listen(5)
-    
+
     client_manager = ClientManager()
     print(f"Server started on port {port}. Waiting for connections...")
 
-    try:
-        while True:
-            try:
-                client_sock, addr = server_socket.accept()
-                handler = ClientHandler(client_sock, addr, client_manager)
-                t = threading.Thread(target=handler.run, daemon=True)
-                t.start()
-            except Exception as e:
-                print(f"Error accepting connection: {e}")
-    except KeyboardInterrupt:
+    # Use a threading.Event to signal shutdown
+    shutdown_event = threading.Event()
+
+    def signal_handler(sig, frame):
         print("\nServer is shutting down...")
+        shutdown_event.set()  # Signal the shutdown event
         for username, client in list(client_manager.clients.items()):
             try:
                 client.send_message("Server is shutting down. Closing connection...\n")
@@ -683,9 +679,39 @@ def main():
                 pass
             client.close()
         client_manager.clients.clear()
-    finally:
-        server_socket.close()
+        server_socket.close()  # Important: Close the socket!
         print("Server socket closed.")
+        # No sys.exit(0) here! Let the main loop handle the exit
+
+    signal.signal(signal.SIGINT, signal_handler)
+
+    while not shutdown_event.is_set():  # Check the event in the loop
+        try:
+            # Set a timeout on accept()
+            server_socket.settimeout(1.0)  # Check for shutdown every 1 second
+            client_sock, addr = server_socket.accept()
+            server_socket.settimeout(None)  # Reset timeout after accepting
+            handler = ClientHandler(client_sock, addr, client_manager)
+            t = threading.Thread(target=handler.run, daemon=True)
+            t.start()
+
+        except socket.timeout:
+            # Timeout occurred, check for shutdown event again
+            continue
+
+        except OSError as e:
+            if e.errno == 9 and shutdown_event.is_set(): # Check for bad file descriptor + Event Check
+                # [Errno 9] Bad file descriptor
+                print("Server socket closed.")
+                break  # Exit the loop gracefully
+            else:
+                print("OSError during accept:", e)
+
+        except Exception as e:
+            print(f"Error accepting connection: {e}")
+
+    # We reach here after shutdown_event.is_set() becomes True
+    print("Exiting main loop.")
 
 if __name__ == "__main__":
     main()
