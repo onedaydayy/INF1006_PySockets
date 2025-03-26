@@ -207,6 +207,8 @@ class Client:
         self.encryption_key = None
         self.encryption_password = None
         self.chat_history = []  # Add chat history list
+        self.user_encryption_keys = {}  # Store encryption keys for different users
+        self.username = None  # Store current user's username
 
     def connect(self):
         """Establish connection to the server and perform username negotiation."""
@@ -289,6 +291,7 @@ class Client:
                     if group_end != -1 and user_end != -1:
                         prefix = message[:user_end+1] + " "
                         content = message[user_end+1:].strip()
+                        sender = message[user_start+1:user_end]
                     else:
                         print(message, end='')  # fallback
                         self.chat_history.append(message)
@@ -296,10 +299,22 @@ class Client:
                 else:
                     prefix = message[:prefix_end+2]
                     content = message[prefix_end+2:].strip()
+                    sender = message[1:prefix_end]
                     
                 if content.startswith('ENC:'):
                     print(f"\n[Encrypted]from: {prefix}Message received.")
-                    if self.encryption_enabled and self.encryption_key:
+                    # Try user-specific key first
+                    if sender in self.user_encryption_keys:
+                        try:
+                            enc_data = base64.b64decode(content[4:])
+                            decrypted = EncryptionUtils.decrypt_message(enc_data, self.user_encryption_keys[sender])
+                            print(f"[Decrypted Message] {prefix}{decrypted}")
+                            self.chat_history.append(f"[Decrypted Message] {prefix}{decrypted}")
+                        except Exception:
+                            print("Failed to decrypt message with user-specific key.")
+                            self.prompt_for_decryption(prefix, content, sender)
+                    # Fall back to global key
+                    elif self.encryption_enabled and self.encryption_key:
                         try:
                             enc_data = base64.b64decode(content[4:])
                             decrypted = EncryptionUtils.decrypt_message(enc_data, self.encryption_key)
@@ -307,9 +322,9 @@ class Client:
                             self.chat_history.append(f"[Decrypted Message] {prefix}{decrypted}")
                         except Exception:
                             print("Failed to decrypt message with current key.")
-                            self.prompt_for_decryption(prefix, content)
+                            self.prompt_for_decryption(prefix, content, sender)
                     else:
-                        self.prompt_for_decryption(prefix, content)
+                        self.prompt_for_decryption(prefix, content, sender)
                 else:
                     print(message, end='')
                     self.chat_history.append(message)
@@ -319,7 +334,7 @@ class Client:
         except Exception as e:
             print(f"\nError processing message: {e}")
 
-    def prompt_for_decryption(self, prefix, content):
+    def prompt_for_decryption(self, prefix, content, sender=None):
         """Prompt user for password to decrypt a message."""
         while True:
             password = input("Enter password to decrypt (or type 'skip' to ignore): ")
@@ -333,6 +348,10 @@ class Client:
                 key = EncryptionUtils.generate_key(password, salt)
                 decrypted = EncryptionUtils.decrypt_message(enc_data, key)
                 print(f"[Decrypted Message] {prefix}{decrypted}")
+                # If sender is specified, store the key for future messages
+                if sender:
+                    self.user_encryption_keys[sender] = key
+                    print(f"Stored encryption key for {sender}")
                 break
             except Exception:
                 print("Wrong password. Try again.")
@@ -351,25 +370,6 @@ class Client:
                         # Send salt to server for other clients
                         self.sock.sendall(f"@salt {base64.b64encode(salt).decode('utf-8')}".encode('utf-8'))
                         print("Encryption enabled. All messages will be encrypted.")
-                        
-                        # Add prompt for first encrypted message
-                        while True:
-                            message = input("Enter your encrypted message (or type '@encrypt off' to disable encryption): ")
-                            if message.lower() == '@encrypt off':
-                                self.encryption_enabled = False
-                                self.encryption_key = None
-                                self.encryption_password = None
-                                print("Encryption disabled. Messages will be sent in plaintext.")
-                                break
-                            elif message:
-                                try:
-                                    encrypted = EncryptionUtils.encrypt_message(message, self.encryption_key)
-                                    formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
-                                    self.sock.sendall(formatted_msg.encode('utf-8'))
-                                    print("[Encrypted] Message sent.")
-                                    #break
-                                except Exception as e:
-                                    print(f"Encryption failed: {e}")
                         return True
                     except Exception as e:
                         print(f"Failed to enable encryption: {e}")
@@ -386,6 +386,35 @@ class Client:
                 self.encryption_password = None
                 print("Encryption disabled. Messages will be sent in plaintext.")
                 return True
+            elif tokens[1].lower() == 'user' and len(tokens) >= 3:
+                target_user = tokens[2]
+                print(f"Setting up encryption for user: {target_user}")
+                password = input(f"Enter encryption password for {target_user}: ")
+                if password:
+                    try:
+                        salt = b'salt_'
+                        user_key = EncryptionUtils.generate_key(password, salt)
+                        self.user_encryption_keys[target_user] = user_key
+                        print(f"User-specific encryption enabled for {target_user}")
+                        
+                        # Wait for user to type the message
+                        message = input(f"Enter encrypted message for {target_user} (or type 'done' to finish): ")
+                        if message.lower() != 'done':
+                            try:
+                                encrypted = EncryptionUtils.encrypt_message(message, user_key)
+                                formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
+                                self.sock.sendall(f"@{target_user} {formatted_msg}".encode('utf-8'))
+                                print(f"[Encrypted] Message sent to {target_user}.")
+                                self.chat_history.append(f"[You] @{target_user} {formatted_msg}")
+                            except Exception as e:
+                                print(f"Encryption failed: {e}")
+                        return True
+                    except Exception as e:
+                        print(f"Failed to setup user encryption: {e}")
+                        return False
+                else:
+                    print("No password provided. User encryption not enabled.")
+                    return False
         return False
 
     def handle_salt_command(self, tokens):
@@ -409,19 +438,32 @@ class Client:
             parts = ' '.join(tokens).split(' ', 1)
             recipient = parts[0][1:]
             
-            if len(parts) > 1 and self.encryption_enabled and self.encryption_key:
+            if len(parts) > 1:
                 message = parts[1]
-                try:
-                    encrypted = EncryptionUtils.encrypt_message(message, self.encryption_key)
-                    formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
-                    self.sock.sendall(f"@{recipient} {formatted_msg}".encode('utf-8'))
+                # Check if we have a specific encryption key for this user
+                if recipient in self.user_encryption_keys:
+                    try:
+                        encrypted = EncryptionUtils.encrypt_message(message, self.user_encryption_keys[recipient])
+                        formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
+                        self.sock.sendall(f"@{recipient} {formatted_msg}".encode('utf-8'))
+                        print(f"Encrypted private message sent to {recipient}.")
+                        self.chat_history.append(f"[You] @{recipient} {formatted_msg}")
+                    except Exception as e:
+                        print(f"Encryption failed: {e}")
+                # If no specific key, use global encryption if enabled
+                elif self.encryption_enabled and self.encryption_key:
+                    try:
+                        encrypted = EncryptionUtils.encrypt_message(message, self.encryption_key)
+                        formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
+                        self.sock.sendall(f"@{recipient} {formatted_msg}".encode('utf-8'))
+                        print(f"Encrypted private message sent to {recipient}.")
+                        self.chat_history.append(f"[You] @{recipient} {formatted_msg}")
+                    except Exception as e:
+                        print(f"Encryption failed: {e}")
+                else:
+                    self.sock.sendall(' '.join(tokens).encode('utf-8'))
                     print(f"Private message sent to {recipient}.")
-                except Exception as e:
-                    print(f"Encryption failed: {e}")
-            else:
-                self.sock.sendall(' '.join(tokens).encode('utf-8'))
-                if len(parts) > 1:
-                    print(f"Private message sent to {recipient}.")
+                    self.chat_history.append(f"[You] @{recipient} {message}")
         except Exception as e:
             print(f"Error sending private message: {e}")
 
@@ -458,9 +500,7 @@ class Client:
 
             # Handle encryption commands
             if command == '@encrypt':
-                if self.handle_encryption_command(tokens):
-                    return True
-                return True
+                return self.handle_encryption_command(tokens)
 
             # Handle salt command
             if command.startswith('@salt'):
