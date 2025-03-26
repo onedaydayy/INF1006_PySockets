@@ -208,6 +208,7 @@ class Client:
         self.encryption_password = None
         self.chat_history = []  # Add chat history list
         self.user_encryption_keys = {}  # Store encryption keys for different users
+        self.group_encryption_keys = {}  # Store encryption keys for different groups
         self.username = None  # Store current user's username
 
     def connect(self):
@@ -292,6 +293,7 @@ class Client:
                         prefix = message[:user_end+1] + " "
                         content = message[user_end+1:].strip()
                         sender = message[user_start+1:user_end]
+                        group_name = message[1:group_end]
                     else:
                         print(message, end='')  # fallback
                         self.chat_history.append(message)
@@ -300,11 +302,23 @@ class Client:
                     prefix = message[:prefix_end+2]
                     content = message[prefix_end+2:].strip()
                     sender = message[1:prefix_end]
+                    group_name = None
                     
                 if content.startswith('ENC:'):
                     print(f"\n[Encrypted]from: {prefix}Message received.")
-                    # Try user-specific key first
-                    if sender in self.user_encryption_keys:
+                    
+                    # Try group-specific key first
+                    if group_name and group_name in self.group_encryption_keys:
+                        try:
+                            enc_data = base64.b64decode(content[4:])
+                            decrypted = EncryptionUtils.decrypt_message(enc_data, self.group_encryption_keys[group_name])
+                            print(f"[Decrypted Group Message] {prefix}{decrypted}")
+                            self.chat_history.append(f"[Decrypted Group Message] {prefix}{decrypted}")
+                        except Exception:
+                            print(f"\n[Group Encrypted Message] from [{sender}] Group Messages received")
+                            self.prompt_for_group_decryption(prefix, content, group_name)
+                    # Try user-specific key
+                    elif sender in self.user_encryption_keys:
                         try:
                             enc_data = base64.b64decode(content[4:])
                             decrypted = EncryptionUtils.decrypt_message(enc_data, self.user_encryption_keys[sender])
@@ -352,6 +366,27 @@ class Client:
                 if sender:
                     self.user_encryption_keys[sender] = key
                     print(f"Stored encryption key for {sender}")
+                break
+            except Exception:
+                print("Wrong password. Try again.")
+
+    def prompt_for_group_decryption(self, prefix, content, group_name):
+        """Prompt user for password to decrypt a group message."""
+        while True:
+            password = input(f"Enter password to decrypt for group messages: ")
+            if password.lower() == "skip":
+                print("Skipping decryption.")
+                break
+
+            try:
+                enc_data = base64.b64decode(content[4:])
+                salt = b'salt_'
+                key = EncryptionUtils.generate_key(password, salt)
+                decrypted = EncryptionUtils.decrypt_message(enc_data, key)
+                print(f"[Decrypted Group Message] {prefix}{decrypted}")
+                # Store the key for future messages from this group
+                self.group_encryption_keys[group_name] = key
+                print(f"Stored encryption key for group {group_name}")
                 break
             except Exception:
                 print("Wrong password. Try again.")
@@ -474,17 +509,60 @@ class Client:
                 print("Invalid group command.")
                 return
             
-            if len(tokens) >= 4 and tokens[1].lower() == 'send' and self.encryption_enabled and self.encryption_key:
-                groupname = tokens[2]
+            subcommand = tokens[1].lower()
+            
+            # Handle group encryption setup
+            if subcommand == 'encrypt' and len(tokens) >= 3:
+                group_name = tokens[2]
+                print(f"Setting up encryption for group: {group_name}")
+                password = input(f"Enter encryption password for group {group_name}: ")
+                if password:
+                    try:
+                        salt = b'salt_'
+                        group_key = EncryptionUtils.generate_key(password, salt)
+                        self.group_encryption_keys[group_name] = group_key
+                        print(f"Group encryption enabled for {group_name}")
+                        
+                        # Prompt for encrypted message immediately after setup
+                        message = input(f"Enter encrypted message for group {group_name}: ")
+                        if message:
+                            try:
+                                encrypted = EncryptionUtils.encrypt_message(message, group_key)
+                                formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
+                                self.sock.sendall(f"@group send {group_name} {formatted_msg}".encode('utf-8'))
+                                print(f"Encrypted message sent to group {group_name}.")
+                                self.chat_history.append(f"[Group {group_name}] [You] {formatted_msg}")
+                            except Exception as e:
+                                print(f"Group encryption failed: {e}")
+                        return True
+                    except Exception as e:
+                        print(f"Failed to setup group encryption: {e}")
+                else:
+                    print("No password provided. Group encryption not enabled.")
+                return True
+
+            # Handle encrypted group message sending
+            if subcommand == 'send' and len(tokens) >= 4:
+                group_name = tokens[2]
                 message_body = ' '.join(tokens[3:])
-                try:
-                    encrypted = EncryptionUtils.encrypt_message(message_body, self.encryption_key)
-                    formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
-                    self.sock.sendall(f"@group send {groupname} {formatted_msg}".encode('utf-8'))
-                    print(f"Encrypted message sent to group {groupname}.")
-                except Exception as e:
-                    print(f"Encryption failed: {e}")
+                
+                # Check if group has encryption enabled
+                if group_name in self.group_encryption_keys:
+                    try:
+                        encrypted = EncryptionUtils.encrypt_message(message_body, self.group_encryption_keys[group_name])
+                        formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
+                        self.sock.sendall(f"@group send {group_name} {formatted_msg}".encode('utf-8'))
+                        print(f"Encrypted message sent to group {group_name}.")
+                        self.chat_history.append(f"[Group {group_name}] [You] {formatted_msg}")
+                    except Exception as e:
+                        print(f"Group encryption failed: {e}")
+                else:
+                    # Send unencrypted message
+                    self.sock.sendall(' '.join(tokens).encode('utf-8'))
+                    print(f"Message sent to group {group_name}.")
+                    self.chat_history.append(f"[Group {group_name}] [You] {message_body}")
             else:
+                # Handle other group commands normally
                 self.sock.sendall(' '.join(tokens).encode('utf-8'))
         except Exception as e:
             print(f"Error handling group command: {e}")

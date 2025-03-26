@@ -24,11 +24,13 @@ Available Commands:
 @group send <group_name> <message> - Send a message to a group.
 @group leave <group_name> - Leave a group.
 @group delete <group_name> - Delete a group.
+@group encrypt <group_name> - Encrypt a group message in a group.
 @history - View chat history.
 @help - Show this help message.
 
 Encryption Commands:
 @encrypt on - Starts an encryption session
+@encrypt user <username> - Encrypts a message for a specific user
 @encrypt off - Stops the encryption session
 
 File Transfer Commands:
