@@ -206,6 +206,7 @@ class Client:
         self.encryption_enabled = False
         self.encryption_key = None
         self.encryption_password = None
+        self.chat_history = []  # Add chat history list
 
     def connect(self):
         """Establish connection to the server and perform username negotiation."""
@@ -274,6 +275,7 @@ class Client:
             # Handle regular messages
             if message.startswith('[FILE]'):
                 print(message, end='')
+                self.chat_history.append(message)  # Store file transfer message
 
             elif message.startswith('['):
                 # Support formats like: [group][user] message
@@ -289,6 +291,7 @@ class Client:
                         content = message[user_end+1:].strip()
                     else:
                         print(message, end='')  # fallback
+                        self.chat_history.append(message)
                         return
                 else:
                     prefix = message[:prefix_end+2]
@@ -301,6 +304,7 @@ class Client:
                             enc_data = base64.b64decode(content[4:])
                             decrypted = EncryptionUtils.decrypt_message(enc_data, self.encryption_key)
                             print(f"[Decrypted Message] {prefix}{decrypted}")
+                            self.chat_history.append(f"[Decrypted Message] {prefix}{decrypted}")
                         except Exception:
                             print("Failed to decrypt message with current key.")
                             self.prompt_for_decryption(prefix, content)
@@ -308,8 +312,10 @@ class Client:
                         self.prompt_for_decryption(prefix, content)
                 else:
                     print(message, end='')
+                    self.chat_history.append(message)
             else:
                 print(message, end='')
+                self.chat_history.append(message)
         except Exception as e:
             print(f"\nError processing message: {e}")
 
@@ -464,10 +470,86 @@ class Client:
 
             # Handle standard commands
             if command in ['@names', '@history', '@help', '@quit']:
-                self.sock.sendall(user_input.encode('utf-8'))
-                if command == '@quit':
+                if command == '@history':
+                    while True:
+                        print("\nChat History Menu:")
+                        print("1. All Chat History")
+                        print("2. Group Chat History")
+                        print("3. Chat History with Specific Person")
+                        print("4. Back to Chat")
+                        
+                        choice = input("\nEnter your choice (1-4): ").strip()
+                        
+                        if choice == '1':
+                            print("\nAll Chat History:")
+                            print("=" * 30)
+                            if self.chat_history:
+                                for msg in self.chat_history:
+                                    msg = msg.strip()
+                                    if not msg.endswith('\n'):
+                                        msg += '\n'
+                                    print(msg, end='')
+                            else:
+                                print("No chat history found.")
+                            print("=" * 30)
+                            
+                        elif choice == '2':
+                            print("\nGroup Chat History:")
+                            print("=" * 30)
+                            # Filter for group messages (messages with [groupname][username] format)
+                            group_messages = []
+                            for msg in self.chat_history:
+                                # Check for group message format: [groupname][username] message
+                                if msg.count('[') >= 2 and msg.count(']') >= 2:
+                                    first_bracket_end = msg.find(']')
+                                    second_bracket_start = msg.find('[', first_bracket_end + 1)
+                                    if second_bracket_start != -1:
+                                        group_messages.append(msg)
+                            
+                            if group_messages:
+                                for msg in group_messages:
+                                    msg = msg.strip()
+                                    if not msg.endswith('\n'):
+                                        msg += '\n'
+                                    print(msg, end='')
+                            else:
+                                print("No group chat history found.")
+                            print("=" * 30)
+                            
+                        elif choice == '3':
+                            username = input("\nEnter username to view chat history with: ").strip()
+                            print(f"\nChat History with {username}:")
+                            print("=" * 30)
+                            # Filter for direct messages with the specified user
+                            user_messages = []
+                            for msg in self.chat_history:
+                                # Check for direct messages (both sent and received)
+                                if (f"[{username}]" in msg or  # Messages from the user
+                                    f"[You] @{username}" in msg or  # Messages sent to the user
+                                    (msg.startswith("[PM from") and username in msg) or  # Private messages from the user
+                                    (msg.startswith("[PM to") and username in msg)):  # Private messages to the user
+                                    user_messages.append(msg)
+                            
+                            if user_messages:
+                                for msg in user_messages:
+                                    msg = msg.strip()
+                                    if not msg.endswith('\n'):
+                                        msg += '\n'
+                                    print(msg, end='')
+                            else:
+                                print(f"No chat history found with {username}.")
+                            print("=" * 30)
+                            
+                        elif choice == '4':
+                            break
+                        else:
+                            print("Invalid choice. Please try again.")
+                            
+                elif command == '@quit':
                     print("You have quit the chat.")
                     return False
+                else:
+                    self.sock.sendall(user_input.encode('utf-8'))
                 return True
 
             # Handle group commands
@@ -505,10 +587,12 @@ class Client:
                     formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
                     self.sock.sendall(formatted_msg.encode('utf-8'))
                     print("Message sent (encrypted).")
+                    self.chat_history.append(f"[You] {formatted_msg}")
                 except Exception as e:
                     print(f"Encryption failed: {e}")
             else:
                 self.sock.sendall(user_input.encode('utf-8'))
+                self.chat_history.append(f"[You] {user_input}")
             return True
         except Exception as e:
             print(f"Error handling input: {e}")
