@@ -405,6 +405,18 @@ class Client:
                         # Send salt to server for other clients
                         self.sock.sendall(f"@salt {base64.b64encode(salt).decode('utf-8')}".encode('utf-8'))
                         print("Encryption enabled. All messages will be encrypted.")
+                        
+                        # Prompt for encrypted message
+                        message = input("Enter encrypted message to send: ")
+                        if message:
+                            try:
+                                encrypted = EncryptionUtils.encrypt_message(message, self.encryption_key)
+                                formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
+                                self.sock.sendall(formatted_msg.encode('utf-8'))
+                                print("Encrypted message sent.")
+                                self.chat_history.append(f"[You] {formatted_msg}")
+                            except Exception as e:
+                                print(f"Encryption failed: {e}")
                         return True
                     except Exception as e:
                         print(f"Failed to enable encryption: {e}")
