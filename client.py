@@ -596,7 +596,7 @@ class Client:
                                 if enc_failure:
                                     del self.group_encryption_keys[group_name]
                                     break
-                                if group_name not in self.group_encryption_keys and enc_input_key is not None:
+                                if enc_input_key is not None:
                                     key_to_use = EncryptionUtils.generate_key(enc_input_key, b'salt_')
                                     self.group_encryption_keys[group_name] = key_to_use
                                 if group_name in self.group_encryption_keys:
@@ -605,7 +605,7 @@ class Client:
                                 if enc_failure:
                                     del self.user_encryption_keys[sender]
                                     break
-                                if sender not in self.user_encryption_keys and enc_input_key is not None:
+                                if enc_input_key is not None:
                                     key_to_use = EncryptionUtils.generate_key(enc_input_key, b'salt_')
                                     self.user_encryption_keys[sender] = key_to_use
                                 if sender in self.user_encryption_keys:
@@ -629,8 +629,8 @@ class Client:
                                     self.chat_history.append(f"[Decrypted{' Group' if is_group else ''}] {prefix}{decrypted_msg}")
                                     loop = False
                                 except Exception as decrypt_err:
-                                    print(f"Failed to decrypt with stored key: {decrypt_err}")
-                                    enc_failure = True
+                                    print("Failed to decrypt with stored key.\nPress Enter to acknowledge. You will be asked for an NEW encryption key.")
+                                    enc_input_key = str(input("Enter an encryption key to use: "))
                             else:
                                 print("No key found for encrypted message.\nPress Enter to acknowledge. You will be asked for an encryption key.")
                                 enc_input_key = str(input("Enter an encryption key to use: "))
