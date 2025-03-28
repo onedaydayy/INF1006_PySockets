@@ -682,7 +682,7 @@ class Client:
          try:
              if len(tokens) < 2: print("Invalid group command."); return
              subcommand = tokens[1].lower()
-             if subcommand in ['set', 'send', 'leave', 'delete']:
+             if subcommand in ['set', 'send', 'leave', 'delete', 'add']:
                   group_name = tokens[2] if len(tokens) > 2 else None
                   message_body = ' '.join(tokens[3:]) if len(tokens) > 3 else None
                   msg_to_send = ' '.join(tokens)

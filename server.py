@@ -22,8 +22,8 @@ Available Commands:
 @quit - Disconnect from the server.
 @names - List all online users.
 @username <message> - Send a private message.
-@everyone <message> - Send a message to all users.
-@group set <group_name> <members> - Create a group.
+@group set <group_name> <members> - Create a group. e.g., group set Group 1 Alice Bob
+@group add <group_name> <members> - Add users to a group.
 @group send <group_name> <message> - Send a message to a group.
 @group leave <group_name> - Leave a group.
 @group delete <group_name> - Delete a group.
@@ -38,11 +38,11 @@ Encryption Commands:
 
 File Transfer Commands:
 @sendfile <filename> <recipient> - Send a file to a specific user.
-@sendfile-group <filename> <group_name> - Send a file to all members of a group.
 @acceptfile - Accept a pending file transfer.
 @rejectfile - Reject a pending file transfer.
 @viewfile <filename> - View contents of a text file (if it exists in your folder or downloads).
 """
+
 
 # --- Encryption Utilities ---
 def generate_key(password):
@@ -424,9 +424,25 @@ class ClientHandler:
                                self.client_manager.send_message(member_name, notification)
             else:
                  self.client.send_message("Group does not exist.\n")
-
-        else:
-            self.client.send_message(f"Unknown or incomplete @group command: {' '.join(tokens)}\n")
+        elif subcommand == 'add' and len(tokens) >= 3:
+            members = set(tokens[3:]) if len(tokens) > 3 else set()
+            members.add(sender_username)
+            if self.client_manager.group_manager.groups and group_name in self.client_manager.group_manager.groups:
+                 added_count = 0
+                 for member_name in members:
+                      if member_name != sender_username:
+                          if member_name in self.client_manager.clients:
+                               success_add, msg_add = self.client_manager.group_manager.add_member(group_name, member_name)
+                               if success_add:
+                                    self.client_manager.send_message(member_name, f"You have been added to group '{group_name}' by {sender_username}.\n")
+                                    added_count += 1
+                               else:
+                                    self.client.send_message(f"Error adding {member_name}: {msg_add}\n")
+                          else:
+                                self.client.send_message(f"Note: User '{member_name}' not found/online to add to group.\n")
+                 self.client.send_message(f"Added {added_count} other members.\n")
+            else:
+                 self.client.send_message("Error: Group does not exist" + '\n')
 
 
     def handle_file_transfer(self, tokens):
