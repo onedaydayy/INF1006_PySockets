@@ -59,9 +59,7 @@ class EncryptionUtils:
              raise TypeError(f"decrypt_message expects bytes or base64 string, got {type(encrypted_message)}")
 
         f = Fernet(key)
-        print("a")
         decrypted_bytes = f.decrypt(encrypted_message_bytes)
-        print("aa")
         return decrypted_bytes.decode('utf-8')
 
 
@@ -589,18 +587,53 @@ class Client:
                         print(f"DEBUG: self.user_encryption_keys = {self.user_encryption_keys}")
                         print(f"DEBUG: self.encryption_key = {self.encryption_key}")
                         # --- END DEBUG PRINT ---
-
-                        if group_name and group_name in self.group_encryption_keys: key_to_use, is_group = self.group_encryption_keys[group_name], True
-                        elif sender and sender in self.user_encryption_keys: key_to_use = self.user_encryption_keys[sender]
-                        elif self.encryption_enabled and self.encryption_key: key_to_use = self.encryption_key
-                        if key_to_use:
-                            try:
-                                decrypted_msg = EncryptionUtils.decrypt_message(content[4:], key_to_use)
-                                # Print decrypted message
-                                print(f"[Decrypted{' Group' if is_group else ''}] {prefix}{decrypted_msg}")
-                                self.chat_history.append(f"[Decrypted{' Group' if is_group else ''}] {prefix}{decrypted_msg}")
-                            except Exception as decrypt_err: print(f"Failed to decrypt with stored key: {decrypt_err}")
-                        else: print("No key found for encrypted message.")
+                        loop = True
+                        enc_failure = False
+                        # the encryption key the user will input in the loop
+                        enc_input_key = None
+                        while loop:
+                            if group_name:
+                                if enc_failure:
+                                    del self.group_encryption_keys[group_name]
+                                    break
+                                if group_name not in self.group_encryption_keys and enc_input_key is not None:
+                                    key_to_use = EncryptionUtils.generate_key(enc_input_key, b'salt_')
+                                    self.group_encryption_keys[group_name] = key_to_use
+                                if group_name in self.group_encryption_keys:
+                                    key_to_use, is_group = self.group_encryption_keys[group_name], True
+                            elif sender:
+                                if enc_failure:
+                                    del self.user_encryption_keys[sender]
+                                    break
+                                if sender not in self.user_encryption_keys and enc_input_key is not None:
+                                    key_to_use = EncryptionUtils.generate_key(enc_input_key, b'salt_')
+                                    self.user_encryption_keys[sender] = key_to_use
+                                if sender in self.user_encryption_keys:
+                                    key_to_use, is_sender = self.user_encryption_keys[sender], True
+                            elif self.encryption_enabled and self.encryption_key:
+                                if enc_failure:
+                                    self.encryption_key = None
+                                    self.encryption_key = False
+                                    break
+                                if enc_input_key is not None:
+                                    key_to_use = EncryptionUtils.generate_key(enc_input_key, b'salt_')
+                                    self.encryption_key = key_to_use
+                                    self.encryption_key = True
+                                if self.encryption_enabled and self.encryption_key:
+                                    key_to_use, is_standalone = self.encryption_key, True
+                            if key_to_use is not None:
+                                try:
+                                    decrypted_msg = EncryptionUtils.decrypt_message(content[4:], key_to_use)
+                                    # Print decrypted message
+                                    print(f"[Decrypted{' Group' if is_group else ''}] {prefix}{decrypted_msg}")
+                                    self.chat_history.append(f"[Decrypted{' Group' if is_group else ''}] {prefix}{decrypted_msg}")
+                                    loop = False
+                                except Exception as decrypt_err:
+                                    print(f"Failed to decrypt with stored key: {decrypt_err}")
+                                    enc_failure = True
+                            else:
+                                print("No key found for encrypted message.\nPress Enter to acknowledge. You will be asked for an encryption key.")
+                                enc_input_key = str(input("Enter an encryption key to use: "))
                     else: # Plaintext
                         print(line.strip()) # Show message
                         self.chat_history.append(line)
