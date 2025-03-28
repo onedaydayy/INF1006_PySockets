@@ -400,7 +400,7 @@ class Client:
                     data = self.sock.recv(1024).decode('utf-8').strip()
                     self.sock.settimeout(None)
                     # fix the duplicate username
-                    if data != "Enter a unique username: ":
+                    if "Enter a unique username" not in data:
                         print(f"Server: {data}") # Keep server prompts
                     if "Enter a unique username" in data:
                         while self.is_running:
