@@ -54,6 +54,8 @@ This is a Python-based chat application that uses sockets for server-client comm
   `"Invalid command. Use @help"`
 
 ## Getting Started
+python server.py 5000
+python client.py localhost 5000
 
 ### Prerequisites
 

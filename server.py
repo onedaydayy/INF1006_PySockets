@@ -29,11 +29,11 @@ Available Commands:
 @group delete <group_name> - Delete a group.
 @group encrypt <group_name> - Encrypt a group message in a group.
 @history - View chat history.
-@help - Show this help message.
+@help - Show this help message. 
 
 Encryption Commands:
 @encrypt on - Starts an encryption session
-@encrypt user <username> - Encrypts a message for a specific user
+@encrypt user <username> - Encrypts a message for a specific user 
 @encrypt off - Stops the encryption session
 
 File Transfer Commands:
