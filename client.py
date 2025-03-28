@@ -34,8 +34,10 @@ class EncryptionUtils:
     def encrypt_message(message: str, key: bytes) -> bytes:
         """Encrypts a message using Fernet (AES)."""
         f = Fernet(key)
-        encrypted_message = f.encrypt(message.encode('utf-8'))
-        return base64.b64encode(encrypted_message)
+        encrypted_message_token = f.encrypt(message.encode('utf-8'))
+        # REMOVE the extra base64 encoding here
+        # return base64.b64encode(encrypted_message_token)
+        return encrypted_message_token  # Return the raw token
 
     @staticmethod
     def decrypt_message(encrypted_message: bytes, key: bytes) -> str:
@@ -56,14 +58,11 @@ class EncryptionUtils:
         else:
              raise TypeError(f"decrypt_message expects bytes or base64 string, got {type(encrypted_message)}")
 
-        try:
-            f = Fernet(key)
-            decrypted_bytes = f.decrypt(encrypted_message_bytes)
-            return decrypted_bytes.decode('utf-8')
-        except Exception as e:
-            # Keep this error print as it indicates a failure visible to the user
-            print(f"\nDecryption Error: {e}")
-            return "[Decryption Failed]"
+        f = Fernet(key)
+        print("a")
+        decrypted_bytes = f.decrypt(encrypted_message_bytes)
+        print("aa")
+        return decrypted_bytes.decode('utf-8')
 
 
 class Client:
@@ -400,7 +399,9 @@ class Client:
                     self.sock.settimeout(60.0)
                     data = self.sock.recv(1024).decode('utf-8').strip()
                     self.sock.settimeout(None)
-                    print(f"Server: {data}") # Keep server prompts
+                    # fix the duplicate username
+                    if data != "Enter a unique username: ":
+                        print(f"Server: {data}") # Keep server prompts
                     if "Enter a unique username" in data:
                         while self.is_running:
                             username_input = input("Enter a unique username: ").strip()
@@ -566,8 +567,29 @@ class Client:
                         sender = line[1:prefix_end]
 
                     if content.startswith('ENC:'):
+                        group_start = line.find("[")
+                        group_end = line.find("]")
+                        group_name = line[group_start+1:group_end]
+
+                        sender_search_str = line[group_end+1:-1]
+                        sender_start = sender_search_str.find("[")
+                        sender_end = sender_search_str.find("]")
+                        sender = sender_search_str[sender_start + 1:sender_end]
+                        if line.count("[") == 1:
+                            sender = group_name
+                            group_name = None
+                        if "PM" in prefix:
+                            sender = prefix[9:len(prefix)-2]
                         print(f"[Encrypted] from: {prefix}Message received.") # Keep notice
                         key_to_use, is_group = None, False
+
+                        # --- ADD DEBUG PRINT HERE ---
+                        print(f"DEBUG: Attempting lookup. group_name='{group_name}', sender='{sender}'")
+                        print(f"DEBUG: self.group_encryption_keys = {self.group_encryption_keys}")
+                        print(f"DEBUG: self.user_encryption_keys = {self.user_encryption_keys}")
+                        print(f"DEBUG: self.encryption_key = {self.encryption_key}")
+                        # --- END DEBUG PRINT ---
+
                         if group_name and group_name in self.group_encryption_keys: key_to_use, is_group = self.group_encryption_keys[group_name], True
                         elif sender and sender in self.user_encryption_keys: key_to_use = self.user_encryption_keys[sender]
                         elif self.encryption_enabled and self.encryption_key: key_to_use = self.encryption_key
@@ -599,8 +621,8 @@ class Client:
 
     def handle_encryption_command(self, tokens):
         if len(tokens) >= 2:
-            cmd_type = tokens[1].lower()
-            if cmd_type == 'on':
+            cmd_type = tokens[1]
+            if cmd_type.lower() == 'on':
                 pw = input("Enter encryption password: ")
                 if pw:
                     try:
@@ -609,24 +631,15 @@ class Client:
                         self.encryption_password = pw
                         self.encryption_enabled = True
                         # Send salt to server for other clients
-                        self.sock.sendall(f"@salt {base64.b64encode(salt).decode('utf-8')}".encode('utf-8'))
+                        # self.sock.sendall(f"@salt {base64.b64encode(salt).decode('utf-8')}".encode('utf-8'))
                         print("Encryption enabled. All messages will be encrypted.")
                         
                         # Prompt for encrypted message
-                        message = input("Enter encrypted message to send: ")
-                        if message:
-                            try:
-                                encrypted = EncryptionUtils.encrypt_message(message, self.encryption_key)
-                                formatted_msg = f"ENC:{base64.b64encode(encrypted).decode('utf-8')}"
-                                self.sock.sendall(formatted_msg.encode('utf-8'))
-                                print("Encrypted message sent.")
-                                self.chat_history.append(f"[You] {formatted_msg}")
-                            except Exception as e:
-                                print(f"Encryption failed: {e}")
+                        # message = input("Enter encrypted message to send: ")
                         return True
                     except Exception as e: print(f"Failed to enable encryption: {e}")
                 else: print("No password provided.")
-            elif cmd_type == 'off':
+            elif cmd_type.lower() == 'off':
                  self.encryption_enabled, self.encryption_key, self.encryption_password = False, None, None
                  print("Encryption disabled.")
                  return True
@@ -693,8 +706,21 @@ class Client:
                        print(log_msg)
                        if hist_msg: self.chat_history.append(hist_msg)
                   else: print(f"Failed to send group command/message.")
-
+             elif subcommand.lower() == 'encrypt':
+                 if len(tokens) >= 3:
+                     group_name = tokens[2]
+                     pw = input(f"Enter encryption password for group '{group_name}': ")
+                     if pw:
+                         try:
+                             salt = b'salt_'  # Use the same fixed salt as other encryption
+                             key = EncryptionUtils.generate_key(pw, salt)
+                             self.group_encryption_keys[group_name] = key
+                             print(f"Group-specific encryption enabled for '{group_name}'.")
+                             print(f"Subsequent '@group send {group_name} ...' messages will use this key.")
+                         except Exception as e:
+                             print(f"Failed setup group encryption key: {e}")
              else: print(f"Unknown group subcommand: {subcommand}")
+             return
          except Exception as e: print(f"Error handling group command: {e}"); traceback.print_exc()
 
 

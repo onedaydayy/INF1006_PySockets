@@ -550,7 +550,7 @@ class ClientHandler:
         tokens = message.split()
         if not tokens: return True
 
-        command = tokens[0].lower()
+        command = tokens[0]
 
         if command in ['@quit', '@names', '@history', '@help']:
             return self.handle_standard_commands(tokens)
