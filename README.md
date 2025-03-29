@@ -16,23 +16,26 @@ This is a Python-based chat application that uses sockets for server-client comm
 
 - **Client-Server Model:**  
   Uses Python sockets and threads to handle multiple clients concurrently.
+
 - **User Authentication:**  
   Clients are prompted for a unique username upon connection.  
-  - **Username Validation:** Only letters, numbers, and underscores are allowed.
+  - **Username Validation:** Only letters, numbers, and underscores are allowed.  
   - **Duplicate Username Rejection:** Duplicate usernames are not permitted.
 
 - **Messaging:**  
   - **Broadcast Messaging:**  
-    Any message sent without a leading `@` is broadcast to all users.
+    Any message sent without a leading `@` is broadcast to all users.  
   - **Private Messaging:**  
     Use `@username <message>` to send a private message to a specific user.  
-    *Example: `@Alice Hello, how are you?`*
+    *Example: `@Alice Hello, how are you?`*  
   - **Group Messaging:**  
     Manage groups with the following commands:
     - `@group set <group_name> <members>` – Create a group.
     - `@group send <group_name> <message>` – Send a message to a group.
     - `@group leave <group_name>` – Leave a group.
     - `@group delete <group_name>` – Delete a group.
+    - `@group add <group_name> <members>` – Add users to a group.
+    - `@group encrypt <group_name>` – Encrypt a group message in a group.
   - **List Online Users:**  
     Type `@names` to view all connected users.
   - **Chat History:**  
@@ -40,8 +43,17 @@ This is a Python-based chat application that uses sockets for server-client comm
   - **Help:**  
     Type `@help` to see a list of available commands.
 
-- **Encryption Support (Optional):**  
-  Clients can enable end-to-end encryption with `@encrypt on` and disable it with `@encrypt off`. Salts are shared to allow key derivation.
+- **Encryption Support:**  
+  Clients can enable end-to-end encryption with `@encrypt on` and disable it with `@encrypt off`. Salts are shared to allow key derivation.  
+  - `@encrypt on` – Starts an encryption session  
+  - `@encrypt user <username>` – Encrypts a message for a specific user  
+  - `@encrypt off` – Stops the encryption session
+
+- **File Transfer:**  
+  - `@sendfile <filename> <recipient>` – Send a file to a specific user.  
+  - `@acceptfile` – Accept a pending file transfer.  
+  - `@rejectfile` – Reject a pending file transfer.  
+  - `@viewfile <filename>` – View contents of a text file (if it exists in your folder or downloads).  
 
 - **Graceful Shutdown:**  
   The server handles controlled shutdowns (via `KeyboardInterrupt`) by notifying all connected clients before closing connections.
